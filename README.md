@@ -7,6 +7,14 @@
 
 当前 Demo 主体位于 `TraceDemo/` 目录。
 
+## `libtrace.so` 在哪里
+
+预编译动态库就在下面这个目录：
+
+`TraceDemo/app/src/main/jniLibs/arm64-v8a/libtrace.so`
+
+如果你是来直接取库、接入现有 Android 工程，先看这个路径就行。
+
 ## 这份工程主要演示什么
 
 本工程围绕 `trace` 最常用的几类能力展开：
