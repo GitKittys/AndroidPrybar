@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">TraceDemo</string>
+    <string name="demo_title">Prybar TraceDemo</string>
+    <string name="demo_subtitle">预编译 libtrace.so 接入示例，包含自定义回调、JNI trace、原子测试和普通 trace 包装示例。</string>
+    <string name="demo_button">Run Native Demo</string>
+    <string name="demo_running">Native demo is running...</string>
+</resources>
