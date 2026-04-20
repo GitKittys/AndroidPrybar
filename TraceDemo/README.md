@@ -243,6 +243,12 @@ const char* symbol = vc_lookup_symbol(ctx, event->address);
 
 `trace`、`freeTrace` 以及 VM 相关的公开接口均已并入这个头文件中，使用者无需再区分第二份公开头文件。
 
+## 交流群 / 联系方式
+
+欢迎扫码进群，一起学习和交流 Android Native / Trace / VM 相关内容。
+
+![交流群二维码](./8eec77497e78828d5053076fd25eaf6f.jpg)
+
 ## 项目结构
 
 ```text
