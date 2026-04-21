@@ -464,7 +464,7 @@ std::string run_atomic_demo(const std::string& filesDir) {
     // 接着再用 trace() 跑同一个目标，
     // 这样就能把“结果对比”和“日志观察”两件事放在一个例子里一起讲清楚。
     auto traced = reinterpret_cast<uint32_t(*)()>(
-        trace(reinterpret_cast<void*>(atomic_demo_target), writablePath.data()));
+        trace((void*)(atomic_demo_target), writablePath.data()));
 
     uint32_t tracePacked = 0;
     if (traced != nullptr) {

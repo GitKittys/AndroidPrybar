@@ -1,5 +1,5 @@
 //
-// Created by ASUS on 2024-07-14.
+// Created by ASUS on 2023-07-14.
 //
 
 #ifndef UNICRONTEST_ARM64EMULATOR_H
@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+/**
+本文件由OpenAi生成
+*/
 
 // ============================================================
 //  vc_err — API 返回的错误码
