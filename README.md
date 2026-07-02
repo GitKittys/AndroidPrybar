@@ -14,7 +14,7 @@ ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 U
 
 ## 快速上手
 
-### trace() — 最简路径，一行出日志
+### trace() — 最简路径，一键出日志,一般用这个就够了,第二个参数是指定一个路径,不要指定名字,它支持多线程调用的,你用的时候,trace这个包装函数会返回一个同等功能的函数指针,你直接用inlinehook或者无痕hook等手段替换到原来地址,等app自己调用,或者你来传参调用都可以
 
 ```cpp
 #include "ARM64Emulator.h"
@@ -38,7 +38,7 @@ int result = fn(1, 2);  // 在 VM 中执行
 vc_free(ctx);
 ```
 
-### replace_trace() — 全局替换式 trace
+### replace_trace() — 这个是我用bobyhook简单的封装了一下trace()而已,是inlinehook.不建议使用
 
 ```cpp
 replace_trace((void*)func_addr, "/data/data/pkg/trace.txt");
