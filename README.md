@@ -1,260 +1,386 @@
 # AndroidPrybar
-下文档是OpenAi写的，作者实在太懒，要么是在忙，要么就是下次一定，总有理由偷懒
-另外代码让ai改崩溃了，一些功能不太稳定，所以很多api都还没放出来，
-比如样本故意读取错误内存触发信号这里我还没恢复处理，不太会用git，没有备份，等我这两天修好，再把更多功能放出来
 
-用于模拟执行 Android 中任意指令片段，监控函数运行时的行为。
+ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 Unicorn 引擎中执行，暴露每条指令、外部调用、SVC、内存访问的全部细节。
 
-本工程已包含预编译的 `libtrace.so`、头文件、JNI 示例和调用样例。克隆后直接编译运行即可查看结果。
-先放出去让大家用用，看看大家的反馈如何，后续会考虑开源。
-
-当前 Demo 主体位于 `TraceDemo/` 目录。
+本工程已包含预编译的 `libtrace.so`、头文件和 JNI 示例。克隆后直接编译运行即可查看结果。
 
 ## `libtrace.so` 在哪里
 
-预编译动态库就在下面这个目录：
+预编译动态库：`app/src/main/jniLibs/arm64-v8a/libtrace.so`
 
-`TraceDemo/app/src/main/jniLibs/arm64-v8a/libtrace.so`
+对外头文件：`app/src/main/cpp/include/ARM64Emulator.h`
 
-如果你是来直接取库、接入现有 Android 工程，先看这个路径就行。
+---
 
-## 这份工程主要演示什么
+## 快速上手
 
-本工程围绕 `trace` 最常用的几类能力展开：
+### trace() — 最简路径，一行出日志
 
-- 将普通 ARM64 函数包装为 VM 托管版本
-- 一键开启目标函数的内置 trace
-- 在回调中接收执行事件，并按自定义策略处理
-- 读写寄存器，观察或修改运行时状态
-- 在 Android / JNI 场景中验证 Native 函数的执行与跟踪
+```cpp
+#include "ARM64Emulator.h"
 
-## 最常用的几组 API
+auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace.txt");
+fn(123);                       // 调用 → 自动写 trace 日志
+freeTrace((uint64_t)fn);       // 用完释放
+```
 
-### 1. `vc_make_handle`
-
-这是最核心的入口函数。
-
-它不仅用于“做 trace”，更将原始函数包装为一个新的可调用句柄。新句柄的调用方式与原函数基本一致，但实际执行时会进入 VM，而非直接运行于 CPU。
+### vc_make_handle — 带回调的 VM 执行
 
 ```cpp
 vm_context* ctx = nullptr;
-auto fn = reinterpret_cast<int(*)(int, int)>(
-    vc_make_handle(reinterpret_cast<void*>(target_func), &ctx)); // 创建与原函数功能等价的函数指针
+auto fn = (int(*)(int, int))vc_make_handle((void*)target_func, &ctx);
 
-int result = fn(1, 2);
+// 注册 hook
+vc_hook_h hh;
+vc_hook_add(ctx, &hh, VC_HOOK_EXTERNAL_JUMP, (void*)my_jump_cb, nullptr, 0, 0);
+
+int result = fn(1, 2);  // 在 VM 中执行
 vc_free(ctx);
 ```
 
-适合场景：
-
-- 验证某个目标函数能否在 VM 中稳定运行
-- 对比 host 与 VM 的执行结果
-- 获取 `vm_context`，为后续回调、寄存器读写、事件控制做准备
-
-一句话理解：
-
-`vc_make_handle` 将“一个普通函数”变成“一个由 VM 托管、但依然可以像普通函数一样调用的包装函数”。
-
-### 2. 自定义回调 `vc_cpu_event_callback`
-
-如果说 `vc_make_handle` 解决的是“怎么把函数放进 VM 里跑”，那么回调解决的就是“跑的过程中我怎么参与决策”。
+### replace_trace() — 全局替换式 trace
 
 ```cpp
-static void my_callback(vm_context* ctx, vc_cpu_event_info* event, void* user_data) {
-    if (event->type != VC_CPU_EVENT_EXTERNAL_JUMP) {
-        return;
-    }
+replace_trace((void*)func_addr, "/data/data/pkg/trace.txt");
+// 之后所有对 func_addr 的调用都自动走 VM trace
+restore_function((void*)func_addr);  // 恢复原函数
+```
 
-    if (event->symbol_name != nullptr && strcmp(event->symbol_name, "strlen") == 0) {
-        uint64_t fake_ret = 6;
-        vc_reg_write(ctx, VC_REG_X0, &fake_ret);
-        event->action = VC_ACTION_SKIP;
+---
+
+## Hook 类型与回调
+
+每种 hook 类型有对应的回调签名：
+
+```cpp
+// 拦截外部函数调用（最常用）
+void my_jump_cb(vm_context* ctx, uint64_t address,
+                const char* symbol_name, vc_event_action* action, void* ud) {
+    if (symbol_name && strcmp(symbol_name, "getuid") == 0) {
+        uint64_t fake_uid = 0;
+        vc_reg_write(ctx, VC_REG_X0, &fake_uid);
+        *action = VC_ACTION_SKIP;  // 跳过真实调用
+    }
+}
+
+// SVC 系统调用监控
+void my_svc_cb(vm_context* ctx, uint64_t address, uint32_t syscall_nr, void* ud) {
+    LOGD("SVC #%u @ 0x%lx", syscall_nr, address);
+}
+
+// 基本块
+void my_block_cb(vm_context* ctx, uint64_t address, uint32_t size, void* ud) {
+    // 每个基本块入口触发
+}
+
+// 内存读写
+void my_mem_cb(vm_context* ctx, vc_mem_type type,
+               uint64_t address, int size, int64_t value, void* ud) {
+    if (type == VC_MEM_WRITE) {
+        LOGD("MEM WRITE @ 0x%lx size=%d val=0x%lx", address, size, value);
     }
 }
 ```
 
-这类回调通常与 `vc_make_handle(..., callback, user_data)` 搭配使用。
+### Hook 类型速查
 
-适合场景：
+| 类型 | 回调签名 | 用途 |
+|------|---------|------|
+| `VC_HOOK_BLOCK` | `vc_cb_hookcode_t` | 每个基本块入口 |
+| `VC_HOOK_CODE` | `vc_cb_hookcode_t` | 每条指令（慢 ~10x） |
+| `VC_HOOK_INTR` | `vc_cb_hookintr_t` | 中断（含 SVC） |
+| `VC_HOOK_MEM_READ` | `vc_cb_hookmem_t` | 内存读 |
+| `VC_HOOK_MEM_WRITE` | `vc_cb_hookmem_t` | 内存写 |
+| `VC_HOOK_MEM_READ_AFTER` | `vc_cb_hookmem_t` | 内存读后（有值） |
+| `VC_HOOK_SVC` | `vc_cb_hooksvc_t` | SVC 系统调用 |
+| `VC_HOOK_EXTERNAL_JUMP` | `vc_cb_hookjump_t` | 外部函数调用 |
 
-- 观察逐条指令、基本块、外部跳转、SVC、中断、内存访问
-- 拦截某个外部函数并直接跳过
-- 伪造某次外部调用的返回值
-- 统计执行过程中的关键事件
+---
 
-一句话理解：
-
-自定义回调不仅能监视每条指令的执行，还能让你在执行过程中真正获得控制权，例如修改 PC。
-
-### 3. `trace`
-
-如果你暂时不想自己接回调，只想快速拿到一份日志，最适合从 `trace` 开始。内置了 JNI trace（所有 JNI 信息）和每条汇编指令的执行信息。
-
-```cpp
-auto traced = reinterpret_cast<int(*)(int)>(
-    trace(reinterpret_cast<void*>(target_func), log_path));
-
-int result = traced(123);
-freeTrace(reinterpret_cast<uint64_t>(traced));
-```
-
-适合场景：
-
-- 第一次接入时验证 `trace` 是否能跑通
-- 先看日志，再决定是否要做更精细的控制
-- 快速观察 JNI 调用链或函数执行路径
-
-一句话理解：
-
-`trace` 是“一键开启内置跟踪”的最短路径。
-
-### 4. `vc_reg_read` / `vc_reg_write`
-
-这组接口的作用很直接：在 VM 中读写寄存器。
+## 寄存器读写
 
 ```cpp
-uint64_t pc = 0;
+uint64_t pc, x0;
 vc_reg_read(ctx, VC_REG_PC, &pc);
+vc_reg_read(ctx, VC_REG_X0, &x0);
 
 uint64_t fake_ret = 0;
 vc_reg_write(ctx, VC_REG_X0, &fake_ret);
+
+// 批量读
+uint64_t x0_val, x1_val, sp_val;
+vc_reg regs[] = { VC_REG_X0, VC_REG_X1, VC_REG_SP };
+void* vals[]  = { &x0_val, &x1_val, &sp_val };
+vc_reg_read_batch(ctx, regs, vals, 3);
+
+// SIMD/FP 寄存器（128 位）
+__uint128_t q0;
+vc_reg_read(ctx, VC_REG_Q0, &q0);
 ```
 
-适合场景：
+---
 
-- 获取当前 `PC`、`X0`、`SP` 等寄存器值
-- 在回调中伪造返回值
-- 直接修改执行状态
+## 跳转控制
 
-一句话理解：
+### 默认行为
 
-一旦进入回调，这组接口就是最直接的“运行时干预工具”。
+| SO 类型 | 默认行为 |
+|---------|---------|
+| 目标 SO | VM 内执行 |
+| 其他用户 SO | VM 内执行 |
+| 系统库（libc 等） | 跳出到 host |
 
-### 5. `vc_set_event_mask`
-
-并非所有事件都需要一直开启。`vc_set_event_mask` 的作用是控制哪些事件进入回调，哪些保持关闭。
+### blacklist — 强制指定 SO 跳出到 host
 
 ```cpp
-vc_set_event_mask(ctx, VC_EVENT_DEFAULT_MASK | VC_EVENT_ENABLE_CODE);
+// 某些 SO 不需要 trace，让它们在 host 上跑更快
+const char* blacklist[] = { "libutils.so", "libcrypto.so", nullptr };
+vc_set_jump_blacklist(blacklist, nullptr, 0);
+
+// 也可以用地址范围
+uint64_t ranges[][2] = { { base, base + 0x200000 } };
+vc_set_jump_blacklist(nullptr, ranges, 1);
+
+// 清除
+vc_clear_jump_blacklist();
 ```
 
-适合场景：
-
-- 开启逐条指令事件做精细观察
-- 减少不必要的噪音和性能开销
-- 将排查范围收窄到某一类事件上
-
-一句话理解：
-
-这组接口是在“细节”与“性能”之间做取舍的开关。
-
-### 6. `vc_lookup_symbol`
-
-很多时候你拿到的是地址，而非符号名。此时可以用 `vc_lookup_symbol` 将地址尽量解析为可读的函数名，尤其适合与外部跳转事件配合使用。
+### 全局开关
 
 ```cpp
-const char* symbol = vc_lookup_symbol(ctx, event->address);
+// 只模拟目标 SO 本身，其他所有用户库都跳出到 host
+vc_set_external_jump_enabled(false);
 ```
 
-适合场景：
+---
 
-- 让日志更易读
-- 了解某次外部跳转具体打到了哪个函数
-- 将地址信息转换为更易理解的名字
+## 单步与受控执行
 
-### 7. `freeTrace` / `vc_free`
+所有单步/断点 API 在**回调中调用**。
 
-这两个接口并不花哨，但在实际使用中非常重要。
+```cpp
+// 单步 — 执行 N 条指令后暂停，再次触发回调链
+vc_single_step(ctx, 1);      // 执行 1 条后暂停
+vc_single_step(ctx, 100);    // 执行 100 条后暂停
+// 回调中不调用 → 恢复正常执行
 
-- `freeTrace` 用于释放 `trace` 返回的包装函数
-- `vc_free` 用于释放 `vc_make_handle` 返回上下文后关联的 VM 资源
+// 设置停止地址（临时断点），到达后自动清除
+vc_set_until(ctx, target_addr);
+vc_set_until(ctx, 0);  // 手动清除
+```
 
-一句话理解：
+### 类 LLDB 调试器示例
 
-前者对应 `trace`，后者对应 `vc_make_handle`，用完务必及时释放。
+```cpp
+void debugger_cb(vm_context* ctx, uint64_t addr, uint32_t size, void* ud) {
+    uint64_t pc;
+    vc_reg_read(ctx, VC_REG_PC, &pc);
 
-## 这份 Demo 里准备了哪些实际场景
+    // 反汇编当前指令
+    vc_insn insn;
+    if (vc_disasm(pc, 1, &insn) > 0) {
+        LOGD("0x%lx: %s %s", insn.address, insn.mnemonic, insn.op_str);
+    }
 
-点击界面上的 `Run Native Demo` 后，会按顺序运行以下几组示例：
+    // 打印寄存器
+    uint64_t x0, x1, sp;
+    vc_reg_read(ctx, VC_REG_X0, &x0);
+    vc_reg_read(ctx, VC_REG_X1, &x1);
+    vc_reg_read(ctx, VC_REG_SP, &sp);
+    LOGD("  X0=0x%lx X1=0x%lx SP=0x%lx", x0, x1, sp);
 
-- 自定义回调示例
-- JNI trace 示例
-- ARM64 原子指令 / `std::atomic` 示例
-- 普通 trace 包装示例
+    vc_single_step(ctx, 1);  // 继续单步
+}
+```
 
-这些示例并非随意拼凑，而是分别对应不同的接入场景。
+---
 
-### 自定义回调示例
+## 反汇编 API
 
-这组示例重点演示：
+```cpp
+// 不需要 vm_context（identity mapping）
+vc_insn insns[10];
+int count = vc_disasm(address, 10, insns);
+for (int i = 0; i < count; i++) {
+    LOGD("0x%lx: [%08x] %s %s",
+        insns[i].address, insns[i].bytes,
+        insns[i].mnemonic, insns[i].op_str);
+}
+```
 
-- 如何声明自己的 `vc_cpu_event_callback`
-- 如何通过 `user_data` 传递状态
-- 如何在 `EXTERNAL_JUMP` 中伪造返回值并跳过真实调用
+---
 
-更适合：
+## VM 控制
 
-- 按策略处理外部函数
-- 自行掌控执行过程
-- 进行行为观测而不只是看日志
+```cpp
+// 停止 VM
+vc_emu_stop(ctx);
 
-### JNI trace 示例
+// CPU 状态快照
+vc_cpu_context* snap = nullptr;
+vc_context_save(ctx, &snap);
+// ... 执行一些操作 ...
+vc_context_restore(ctx, snap);
+vc_context_free(snap);
 
-这组示例重点演示：
+// 符号查询
+const char* sym = vc_lookup_symbol(ctx, address);
+```
 
-- 如何在 Android 环境中直接调用 `trace`
-- 如何跟踪 JNI 相关调用
-- 如何将日志写入应用自己的文件目录
+---
 
-更适合：
+## 内存监控
 
-- 验证 JNI-heavy 函数在 `trace` 下是否正常
-- 演示这套 API 在 Android 项目中的接入方式
-- 快速获取 JNI 调用链日志
+```cpp
+// 内置监控（每个 ctx 各只能添加一次）
+trace_read(ctx, 0, 0);   // 全范围读监控
+trace_write(ctx, 0, 0);  // 全范围写监控
 
-### 原子测试示例
+// 自定义 watchpoint
+void mem_watch(vm_context* ctx, vc_mem_type type,
+               uint64_t address, int size, int64_t value, void* ud) {
+    uint64_t pc;
+    vc_reg_read(ctx, VC_REG_PC, &pc);
+    LOGD("WATCHPOINT: [0x%lx] written by PC=0x%lx val=0x%lx", address, pc, value);
+}
+vc_hook_h hh;
+vc_hook_add(ctx, &hh, VC_HOOK_MEM_WRITE, (void*)mem_watch, nullptr,
+            watch_addr, watch_addr + 8);
+```
 
-这组示例重点演示：
+---
 
-- VM 对常见 ARM64 原子指令的执行结果是否正确
-- `std::atomic` 相关逻辑在 VM 下是否正常
+## 实战示例：绕过环境检测
 
-更适合：
+```cpp
+void anti_detect(vm_context* ctx, uint64_t addr,
+                 const char* sym, vc_event_action* action, void* ud) {
+    if (!sym) return;
 
-- 进行兼容性验证
-- 做回归测试
-- 确认底层指令行为在 VM 中是否稳定
+    if (strcmp(sym, "access") == 0) {
+        uint64_t path_ptr;
+        vc_reg_read(ctx, VC_REG_X0, &path_ptr);
+        const char* path = (const char*)path_ptr;
+        if (strstr(path, "su") || strstr(path, "magisk")) {
+            uint64_t ret = (uint64_t)-1;
+            vc_reg_write(ctx, VC_REG_X0, &ret);
+            *action = VC_ACTION_SKIP;
+        }
+    }
+    else if (strcmp(sym, "getuid") == 0) {
+        uint64_t ret = 10000;
+        vc_reg_write(ctx, VC_REG_X0, &ret);
+        *action = VC_ACTION_SKIP;
+    }
+    else if (strcmp(sym, "exit") == 0 || strcmp(sym, "abort") == 0) {
+        *action = VC_ACTION_SKIP;
+    }
+}
 
-### 普通 trace 示例
+vm_context* ctx = nullptr;
+auto fn = (int(*)())vc_make_handle((void*)target, &ctx);
+vc_hook_h hh;
+vc_hook_add(ctx, &hh, VC_HOOK_EXTERNAL_JUMP, (void*)anti_detect, nullptr, 0, 0);
+fn();
+vc_free(ctx);
+```
 
-这组示例重点演示：
+---
 
-- 如何以最小成本将函数接入 `trace`
-- 如何快速拿到日志并及时释放包装句柄
+## trace 输出格式
 
-更适合：
+每行一条指令：
+```
+so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem_w[0xADDR]=VAL
+```
 
-- 第一次接入
-- 先跑通再细化
-- 快速确认 `trace` 能力是否正常工作
+- **str:"..."** — 访问地址是 C 字符串时完整输出
+- **->"..."** — 加载的值是字符串指针时输出指向的字符串
+- **[CALL] func(args)** — 外部函数调用
+- **>>> JNIEnv->Method()** — JNI 调用
 
-## 运行后会生成什么
+---
 
-运行成功后，会在应用自身的 `filesDir` 下生成以下日志文件：
+## API 速查表
 
-- `prybar-jni-trace.log`
-- `prybar-atomic-trace.log`
-- `prybar-plain-trace.log`
+| API | 用途 |
+|-----|------|
+| `trace(func, path)` | 快速 trace |
+| `trace(func, path, &ctx)` | 带 ctx 的 trace |
+| `freeTrace(wrapper)` | 释放 trace 句柄 |
+| `replace_trace(func, path)` | 全局替换式 trace |
+| `restore_function(func)` | 恢复被替换的函数 |
+| `vc_make_handle(func, &ctx)` | 创建裸 VM 句柄 |
+| `vc_free(ctx)` | 释放 VM 上下文 |
+| `vc_hook_add(ctx, &hh, type, cb, ud, begin, end)` | 注册 hook |
+| `vc_hook_del(ctx, hh)` | 删除 hook |
+| `vc_reg_read / vc_reg_write` | 寄存器读写 |
+| `vc_reg_read_batch / vc_reg_write_batch` | 批量读写 |
+| `vc_emu_stop(ctx)` | 停止 VM |
+| `vc_single_step(ctx, count)` | 执行 N 条后暂停 |
+| `vc_set_until(ctx, addr)` | 设置临时断点 |
+| `vc_disasm(addr, count, out)` | 反汇编 |
+| `vc_context_save / restore / free` | CPU 快照 |
+| `vc_lookup_symbol(ctx, addr)` | 地址查符号 |
+| `vc_set_jump_blacklist(names, ranges, n)` | 设置跳转黑名单 |
+| `vc_clear_jump_blacklist()` | 清除黑名单 |
+| `vc_set_external_jump_enabled(enabled)` | 全局跳转开关 |
+| `trace_read / trace_write` | 内存监控 |
 
-界面输出中也会直接显示完整路径，方便你第一时间查看结果。
+## 性能参考
 
-## 对外头文件
+| 模式 | 速度 | 适用场景 |
+|------|------|---------|
+| vc_make_handle（默认） | ~2-5x 慢 | 功能验证、外部调用监控 |
+| trace() 指令级 | ~50-100x 慢 | 详细分析、逆向工程 |
+| vc_make_handle + CODE | ~10-20x 慢 | 自定义逐指令监控 |
+| vc_single_step(ctx, 1) | ~100-200x 慢 | 精确调试 |
 
-目前对外统一使用一个头文件：
+---
 
-`TraceDemo/app/src/main/cpp/include/ARM64Emulator.h`
+## Demo 工程说明
 
-`trace`、`freeTrace` 以及 VM 相关的公开接口均已并入这个头文件中，使用者无需再区分第二份公开头文件。
+点击界面上的 `Run Native Demo` 后会按顺序运行：
+
+1. **自定义回调示例** — `vc_make_handle` + 事件回调 + 伪造返回值
+2. **JNI trace 示例** — `trace()` 在 Android 环境中跟踪 JNI 调用
+3. **原子指令测试** — LDXR/STXR/CAS/SWP/LDADD + std::atomic 正确性验证
+4. **普通 trace 示例** — 最小接入路径
+
+运行后在 `filesDir` 下生成日志文件，界面输出中显示完整路径。
+
+## 项目结构
+
+```text
+AndroidPrybar/
+|-- TraceDemo/                       ← Android 接入示例工程
+|   `-- app/src/main/
+|       |-- cpp/include/ARM64Emulator.h  ← API 头文件
+|       |-- cpp/native-lib.cpp           ← Demo 示例代码
+|       `-- jniLibs/arm64-v8a/libtrace.so ← 预编译库
+|-- tools/
+|   `-- build_calltree.py            ← trace → 函数调用树/调用图
+|-- .claude/skills/unicorn-trace/    ← 附带的 Claude Code 用法 skill
+`-- README.md
+```
+
+## 附带工具
+
+### `tools/build_calltree.py` — trace → 函数调用树
+
+从 trace 重建函数调用树/调用图（谁调了谁、各函数调用次数）。脚本侧建树，部分/被打断的 trace 也能建；新引擎的多线程输出（每线程一文件的目录）传目录即自动每线程一棵树。
+
+```bash
+python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] [最大行数]
+# 输出: <base>_calltree.txt(调用树) + <base>_callgraph.txt(调用图/计数)
+```
+
+### `.claude/skills/unicorn-trace/` — Claude Code 用法 skill
+
+本仓库内置一个 **Claude Code skill：`unicorn-trace`**。用 Claude Code 打开本仓库干活时，它会自动带上 libtrace 的完整用法，AI 直接知道怎么调 `trace()` / `vc_make_handle` / 各类 hook，不用每次解释。
+- `SKILL.md`：精简速查（两个入口、API 速查表、Hook 类型、实战示例索引、trace 格式、性能、限制）。
+- `GUIDE.md`：完整指南（完整 API + 实战示例 + trace 格式）。
+- 想在别的项目用：把 `.claude/skills/unicorn-trace/` 复制到那个项目的 `.claude/skills/` 或用户级 `~/.claude/skills/`。
 
 ## 交流群 / 联系方式
 
@@ -262,40 +388,10 @@ const char* symbol = vc_lookup_symbol(ctx, event->address);
 
 ![交流群二维码](./TraceDemo/8eec77497e78828d5053076fd25eaf6f.jpg)
 
-## 项目结构
-
-```text
-AndroidPrybar/
-|-- TraceDemo/
-|   |-- app/
-|   |   |-- src/main/cpp/
-|   |   |   |-- include/
-|   |   |   |   `-- ARM64Emulator.h
-|   |   |   |-- CMakeLists.txt
-|   |   |   `-- native-lib.cpp
-|   |   |-- src/main/jniLibs/arm64-v8a/libtrace.so
-|   |   `-- src/main/java/com/prybar/tracedemo/MainActivity.java
-|   |-- API_EXAMPLES.md
-|   `-- README.md
-`-- README.md
-```
-
-## 建议怎么阅读这份工程
-
-如果你是第一次接触这套接口，比较稳妥的顺序通常是：
-
-1. 先看普通 `trace` 示例
-2. 再看 `vc_make_handle`
-3. 再看自定义回调
-4. 再看寄存器读写和事件控制
-5. 最后看 JNI trace 和原子测试
-
-这样更容易先建立整体理解，再进入更细粒度的运行时控制。
-
 ## 个人的碎碎念念
 
 这个工具我断断续续写了两年。当时几乎没有好用且公开的 trace 工具，也无人分享开发此类工具的方法。我一点点摸索、测试、推倒重来，仅为了编写一个支持自动传参的 JIT，就思考测试了许久。
 
 同时，我知道在 AI 时代，即使不开放源码，通过 IDA 反汇编也可以很快复刻出工具并学习其中的思路。但这并不重要。
 
-不求署名，不求分润，不求你在任何地方提及我的名字。我只求你在按下“复制”或“生成”之前，在心里，对这段熬了两年的代码，说一声谢谢。不需要我这份刚燃起开源的心冷却下去，不需要写在任何文档里。只要你自己知道，这东西不是凭空从石头里蹦出来的，它是某个人在无数个深夜里，一行一行从混沌里捞出来的，这就够了。
+不求署名，不求分润，不求你在任何地方提及我的名字。我只求你在按下"复制"或"生成"之前，在心里，对这段熬了两年的代码，说一声谢谢。不需要我这份刚燃起开源的心冷却下去，不需要写在任何文档里。只要你自己知道，这东西不是凭空从石头里蹦出来的，它是某个人在无数个深夜里，一行一行从混沌里捞出来的，这就够了。
