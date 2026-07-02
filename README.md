@@ -386,7 +386,7 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 
 欢迎扫码进群，一起学习和交流 Android Native / Trace / VM 相关内容。
 
-![交流群二维码](./TraceDemo/8eec77497e78828d5053076fd25eaf6f.jpg)
+![交流群二维码](./TraceDemo/59fb9c9ea8fcff2c0c8ae12d2064b25e.jpg)
 
 ## 个人的碎碎念念
 
