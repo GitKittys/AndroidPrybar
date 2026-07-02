@@ -2,7 +2,7 @@
 
 作者:发财哥
 
-ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 Unicorn 引擎中执行，暴露每条指令、外部调用、SVC、内存访问的全部细节。
+ARM64 函数级 VM 执行与指令跟踪框架。基于**深度魔改的 Unicorn 引擎**（含 13 项 JIT/TLB 性能优化、VM image 上下文池、信号投递机制 `UC_HOOK_SIGNAL` / `uc_signal_request`、轻量逐指令回调 `UC_HOOK_CODE_FAST`、block skip 等非上游特性），把任意 native 函数放进 VM 中执行，暴露每条指令、外部调用、SVC、内存访问的全部细节。
 
 本工程已包含预编译的 `libtrace.so`、头文件和 JNI 示例。克隆后直接编译运行即可查看结果。
 支持多线程trace，有时候样本会在多个线程调用同一个函数，我里面会自动命名文件tid_index.log
