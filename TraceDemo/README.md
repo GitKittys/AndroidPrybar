@@ -296,16 +296,52 @@ vc_free(ctx);
 
 ## trace 输出格式
 
-每行一条指令：
+每行一条指令，格式：
 
 ```
-so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem_w[0xADDR]=VAL
+模块名+0x模块内偏移 0x绝对PC: 助记符 操作数 读寄存器=值 => 写寄存器=值  mem_r[地址] / mem_w[地址]=值
 ```
 
-- **str:"..."** — 访问地址是 C 字符串时完整输出
-- **->"..."** — 加载的值是字符串指针时输出指向的字符串
-- **[CALL] func(args)** — 外部函数调用
-- **>>> JNIEnv->Method()** — JNI 调用
+### 每个字段说明
+
+| 字段 | 含义 | 示例 |
+|------|------|------|
+| `模块名+0xOFFSET` | SO 名 + 模块内偏移，直接对应 IDA 地址 | `libtarget.so+0x35a6e0` |
+| `0xPC` | 绝对虚拟地址 | `0x727a35a6e0` |
+| `助记符 操作数` | 反汇编结果 | `stp x29, x30, [sp, #-0x30]!` |
+| `寄存器=值` | 指令**读取**的寄存器当前值（只显示本条指令用到的） | `x29=0x764a233e00 x30=0x727a290130` |
+| `=> 寄存器=值` | 指令**写入**的寄存器新值 | `=> w8=0x7` |
+| `mem_r[地址]` | 内存读地址 | `mem_r[0x764a233d8c]` |
+| `mem_w[地址]=值` | 内存写地址和写入的值 | `mem_w[0x764a233dc0]=0x42` |
+| `str:"..."` | 访问的地址本身是 C 字符串，完整输出内容 | `str:"ro.build.fingerprint"` |
+| `->"..."` | 加载的值是一个字符串指针，输出它指向的字符串 | `->"/data/data/com.example/config.json"` |
+
+### 特殊标签行
+
+除了普通指令行之外，trace 中还会插入以下特殊标签行：
+
+| 标签 | 触发条件 | 输出内容 | 正则匹配 |
+|------|---------|---------|---------|
+| `[CALL]` | VM 跳转到外部函数时 | 函数名 + 参数（已知签名显示参数名，未知显示前 4 个 hex） | `\[CALL\]\s+(\w+)\(` |
+| `>>> JNIEnv->` | JNI 函数被调用时 | JNI 方法名 + 参数 + 返回值 | `>>>\s+JNIEnv->` |
+
+### 示例片段
+
+```
+libtarget.so+0x35a6e0 0x727a35a6e0: stp x29, x30, [sp, #-0x30]! x29=0x764a233e00 x30=0x727a290130 sp=0x764a233df0
+libtarget.so+0x35a710 0x727a35a710: blr x8 x8=0x70c04759f0
+  [CALL] getuid()
+libtarget.so+0x35a714 0x727a35a714: cmp w0, #0x15f8f => nzcv=0x60000000
+    >>> JNIEnv->FindClass("com/example/MyClass") => 0x1 @ [libtarget.so]0x26f46c
+libtarget.so+0x86fe0 0x727a286fe0: ldr x1, [x8] x8=0x764a233da0 => x1=0x727a2f0100  mem_r[0x764a233da0] ->"/data/data/com.example/files/config.json"
+libtarget.so+0x86fe8 0x727a286fe8: ldr x2, [sp, #0x30] sp=0x764a233d70  mem_r[0x764a233da0] str:"ro.build.fingerprint"
+```
+
+### 字符串自动检测规则
+
+- 仅 `ldr x`/`str x` 等 **>= 8 字节**的内存访问触发，`ldrb`/`ldrh` 不触发（避免循环拷贝噪音）
+- **str:"..."** — 访问的地址本身是一个 C 字符串（至少前 4 字节是可打印字符）
+- **->"..."** — 访问的地址不是字符串，但加载出来的 8 字节值是一个有效的字符串指针
 
 ---
 
