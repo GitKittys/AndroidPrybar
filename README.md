@@ -19,9 +19,17 @@ ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 U
 ```cpp
 #include "ARM64Emulator.h"
 
-auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace.txt");
+// 本地文件输出（LZ4 压缩，per-thread 自动分 .lz4 文件）
+auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir");
 fn(123);                       // 调用 → 自动写 trace 日志
 freeTrace((uint64_t)fn);       // 用完释放
+// 输出文件在 trace_dir/ 下，用 trace_receiver.py decode *.lz4 还原为文本
+
+// TCP 远程输出（LZ4 压缩，实时传到 PC，适合超大 trace）,在使用的时候adb forward该端口即可
+auto fn2 = (int(*)(int))trace((void*)target_func, "tcp:9876");
+// ↑ 阻塞等待 PC 连接，PC 端运行: python trace_receiver.py receive，这个的具体使用写在最末尾
+fn2(123);
+freeTrace((uint64_t)fn2);
 ```
 
 ### vc_make_handle — 带回调的 VM 执行
@@ -38,10 +46,10 @@ int result = fn(1, 2);  // 在 VM 中执行
 vc_free(ctx);
 ```
 
-### replace_trace() — 这个是我用bobyhook简单的封装了一下trace()而已,是inlinehook.不建议使用
+### replace_trace() — 这个是我用dobbyhook简单的封装了一下trace()而已,是inlinehook.不建议使用
 
 ```cpp
-replace_trace((void*)func_addr, "/data/data/pkg/trace.txt");
+replace_trace((void*)func_addr, "/data/data/pkg/trace_dir");
 // 之后所有对 func_addr 的调用都自动走 VM trace
 restore_function((void*)func_addr);  // 恢复原函数
 ```
@@ -84,16 +92,18 @@ void my_mem_cb(vm_context* ctx, vc_mem_type type,
 
 ### Hook 类型速查
 
-| 类型 | 回调签名 | 用途 |
-|------|---------|------|
-| `VC_HOOK_BLOCK` | `vc_cb_hookcode_t` | 每个基本块入口 |
-| `VC_HOOK_CODE` | `vc_cb_hookcode_t` | 每条指令（慢 ~10x） |
-| `VC_HOOK_INTR` | `vc_cb_hookintr_t` | 中断（含 SVC） |
-| `VC_HOOK_MEM_READ` | `vc_cb_hookmem_t` | 内存读 |
-| `VC_HOOK_MEM_WRITE` | `vc_cb_hookmem_t` | 内存写 |
-| `VC_HOOK_MEM_READ_AFTER` | `vc_cb_hookmem_t` | 内存读后（有值） |
-| `VC_HOOK_SVC` | `vc_cb_hooksvc_t` | SVC 系统调用 |
-| `VC_HOOK_EXTERNAL_JUMP` | `vc_cb_hookjump_t` | 外部函数调用 |
+
+| 类型                       | 回调签名               | 用途           |
+| ------------------------ | ------------------ | ------------ |
+| `VC_HOOK_BLOCK`          | `vc_cb_hookcode_t` | 每个基本块入口      |
+| `VC_HOOK_CODE`           | `vc_cb_hookcode_t` | 每条指令（慢 ~10x） |
+| `VC_HOOK_INTR`           | `vc_cb_hookintr_t` | 中断（含 SVC）    |
+| `VC_HOOK_MEM_READ`       | `vc_cb_hookmem_t`  | 内存读          |
+| `VC_HOOK_MEM_WRITE`      | `vc_cb_hookmem_t`  | 内存写          |
+| `VC_HOOK_MEM_READ_AFTER` | `vc_cb_hookmem_t`  | 内存读后（有值）     |
+| `VC_HOOK_SVC`            | `vc_cb_hooksvc_t`  | SVC 系统调用     |
+| `VC_HOOK_EXTERNAL_JUMP`  | `vc_cb_hookjump_t` | 外部函数调用       |
+
 
 ---
 
@@ -124,11 +134,13 @@ vc_reg_read(ctx, VC_REG_Q0, &q0);
 
 ### 默认行为
 
-| SO 类型 | 默认行为 |
-|---------|---------|
-| 目标 SO | VM 内执行 |
-| 其他用户 SO | VM 内执行 |
+
+| SO 类型       | 默认行为     |
+| ----------- | -------- |
+| 目标 SO       | VM 内执行   |
+| 其他用户 SO     | VM 内执行   |
 | 系统库（libc 等） | 跳出到 host |
+
 
 ### blacklist — 强制指定 SO 跳出到 host
 
@@ -289,7 +301,10 @@ vc_free(ctx);
 
 ## trace 输出格式
 
-每行一条指令：
+trace 输出为 LZ4 压缩格式（`.lz4` 文件），用 `trace_receiver.py decode` 还原为文本。
+
+还原后每行一条指令：
+
 ```
 so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem_w[0xADDR]=VAL
 ```
@@ -303,38 +318,42 @@ so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem
 
 ## API 速查表
 
-| API | 用途 |
-|-----|------|
-| `trace(func, path)` | 快速 trace |
-| `trace(func, path, &ctx)` | 带 ctx 的 trace |
-| `freeTrace(wrapper)` | 释放 trace 句柄 |
-| `replace_trace(func, path)` | 全局替换式 trace |
-| `restore_function(func)` | 恢复被替换的函数 |
-| `vc_make_handle(func, &ctx)` | 创建裸 VM 句柄 |
-| `vc_free(ctx)` | 释放 VM 上下文 |
-| `vc_hook_add(ctx, &hh, type, cb, ud, begin, end)` | 注册 hook |
-| `vc_hook_del(ctx, hh)` | 删除 hook |
-| `vc_reg_read / vc_reg_write` | 寄存器读写 |
-| `vc_reg_read_batch / vc_reg_write_batch` | 批量读写 |
-| `vc_emu_stop(ctx)` | 停止 VM |
-| `vc_single_step(ctx, count)` | 执行 N 条后暂停 |
-| `vc_set_until(ctx, addr)` | 设置临时断点 |
-| `vc_disasm(addr, count, out)` | 反汇编 |
-| `vc_context_save / restore / free` | CPU 快照 |
-| `vc_lookup_symbol(ctx, addr)` | 地址查符号 |
-| `vc_set_jump_blacklist(names, ranges, n)` | 设置跳转黑名单 |
-| `vc_clear_jump_blacklist()` | 清除黑名单 |
-| `vc_set_external_jump_enabled(enabled)` | 全局跳转开关 |
-| `trace_read / trace_write` | 内存监控 |
+
+| API                                               | 用途                                             |
+| ------------------------------------------------- | ---------------------------------------------- |
+| `trace(func, path)`                               | 快速 trace（path 为目录 → 本地 .lz4，`"tcp:PORT"` → 远程） |
+| `trace(func, path, &ctx)`                         | 带 ctx 的 trace                                  |
+| `freeTrace(wrapper)`                              | 释放 trace 句柄                                    |
+| `replace_trace(func, path)`                       | 全局替换式 trace                                    |
+| `restore_function(func)`                          | 恢复被替换的函数                                       |
+| `vc_make_handle(func, &ctx)`                      | 创建裸 VM 句柄                                      |
+| `vc_free(ctx)`                                    | 释放 VM 上下文                                      |
+| `vc_hook_add(ctx, &hh, type, cb, ud, begin, end)` | 注册 hook                                        |
+| `vc_hook_del(ctx, hh)`                            | 删除 hook                                        |
+| `vc_reg_read / vc_reg_write`                      | 寄存器读写                                          |
+| `vc_reg_read_batch / vc_reg_write_batch`          | 批量读写                                           |
+| `vc_emu_stop(ctx)`                                | 停止 VM                                          |
+| `vc_single_step(ctx, count)`                      | 执行 N 条后暂停                                      |
+| `vc_set_until(ctx, addr)`                         | 设置临时断点                                         |
+| `vc_disasm(addr, count, out)`                     | 反汇编                                            |
+| `vc_context_save / restore / free`                | CPU 快照                                         |
+| `vc_lookup_symbol(ctx, addr)`                     | 地址查符号                                          |
+| `vc_set_jump_blacklist(names, ranges, n)`         | 设置跳转黑名单                                        |
+| `vc_clear_jump_blacklist()`                       | 清除黑名单                                          |
+| `vc_set_external_jump_enabled(enabled)`           | 全局跳转开关                                         |
+| `trace_read / trace_write`                        | 内存监控                                           |
+
 
 ## 性能参考
 
-| 模式 | 速度 | 适用场景 |
-|------|------|---------|
-| vc_make_handle（默认） | ~2-5x 慢 | 功能验证、外部调用监控 |
-| trace() 指令级 | ~50-100x 慢 | 详细分析、逆向工程 |
-| vc_make_handle + CODE | ~10-20x 慢 | 自定义逐指令监控 |
-| vc_single_step(ctx, 1) | ~100-200x 慢 | 精确调试 |
+
+| 模式                     | 速度          | 适用场景        |
+| ---------------------- | ----------- | ----------- |
+| vc_make_handle（默认）     | ~2-5x 慢     | 功能验证、外部调用监控 |
+| trace() 指令级            | ~50-100x 慢  | 详细分析、逆向工程   |
+| vc_make_handle + CODE  | ~10-20x 慢   | 自定义逐指令监控    |
+| vc_single_step(ctx, 1) | ~100-200x 慢 | 精确调试        |
+
 
 ---
 
@@ -359,12 +378,64 @@ AndroidPrybar/
 |       |-- cpp/native-lib.cpp           ← Demo 示例代码
 |       `-- jniLibs/arm64-v8a/libtrace.so ← 预编译库
 |-- tools/
+|   |-- trace_receiver.py            ← TCP 接收 + LZ4 解码工具
 |   `-- build_calltree.py            ← trace → 函数调用树/调用图
 |-- .claude/skills/unicorn-trace/    ← 附带的 Claude Code 用法 skill
 `-- README.md
 ```
 
 ## 附带工具
+
+### `tools/trace_receiver.py` — LZ4 解码 + TCP 接收
+
+trace 输出统一为 LZ4 压缩格式（`.lz4` 文件），压缩比约 7-8x。本工具负责解码和 TCP 接收。
+
+#### 解码本地 .lz4 文件
+
+手机上 trace 产生的文件是 `.lz4` 格式，先 `adb pull` 到 PC，再用 `decode` 还原为可读文本：
+
+```bash
+# 从手机拉取 trace 目录
+adb pull /data/data/com.xxx/trace_dir/ .
+
+# 解码
+python tools/trace_receiver.py decode trace.lz4              # → trace.log
+python tools/trace_receiver.py decode *.lz4                  # 批量解码所有 .lz4
+python tools/trace_receiver.py decode trace.lz4 --stdout     # 输出到 stdout（可 pipe 给 grep 等）
+python tools/trace_receiver.py decode trace.lz4 -o out.log   # 指定输出文件名
+```
+
+#### TCP 远程接收（适合超大 trace）
+
+trace 量很大时（几百 MB ~ 几 GB），不适合写手机存储，用 TCP 实时传到 PC：
+
+```bash
+# 1. PC 端先启动接收（自动 adb forward，等待设备连接）
+python tools/trace_receiver.py receive
+
+# 2. App 中调用 trace(func, "tcp:9876") → 设备阻塞等待 PC 连接
+#    连接建立后 trace 数据实时流式传输到 PC
+#    freeTrace() 后自动结束
+
+# 自定义选项
+python tools/trace_receiver.py receive -p 12345 -o my.log    # 自定义端口和输出前缀
+python tools/trace_receiver.py receive --no-adb --host 192.168.1.x  # WiFi 直连（不走 USB）
+python tools/trace_receiver.py receive --stdout              # 输出到 stdout
+```
+
+#### 多线程输出
+
+trace 支持多线程并发调用，每个线程的 trace 数据带有 tid 标识：
+
+- **本地文件模式**：每个线程自动生成独立文件，如 `func_tid1234_0.lz4`、`func_tid1234_1.lz4`（同一线程多次调用自动递增序号）
+- **TCP 模式**：所有线程数据通过同一 socket 传输，接收端自动按 tid 分文件，如 `trace_tid1234_0.log`、`trace_tid5678_0.log`。同一 tid 多次接收时序号自动递增，不会覆盖已有文件
+- **decode 多线程 .lz4**：如果一个 `.lz4` 文件中包含多个 tid 的数据，decode 会自动拆分为 `_tid{N}.log`
+
+接收/解码时终端会实时显示各线程数据量：
+
+```
+[*] frames=42  total=3.2MB  ratio=7.6x  speed=12.5MB/s  [t1234:2.1M t5678:1.1M]
+```
 
 ### `tools/build_calltree.py` — trace → 函数调用树
 
@@ -378,6 +449,7 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 ### `.claude/skills/unicorn-trace/` — Claude Code 用法 skill
 
 本仓库内置一个 **Claude Code skill：`unicorn-trace`**。用 Claude Code 打开本仓库干活时，它会自动带上 libtrace 的完整用法，AI 直接知道怎么调 `trace()` / `vc_make_handle` / 各类 hook，不用每次解释。
+
 - `SKILL.md`：精简速查（两个入口、API 速查表、Hook 类型、实战示例索引、trace 格式、性能、限制）。
 - `GUIDE.md`：完整指南（完整 API + 实战示例 + trace 格式）。
 - 想在别的项目用：把 `.claude/skills/unicorn-trace/` 复制到那个项目的 `.claude/skills/` 或用户级 `~/.claude/skills/`。
@@ -386,7 +458,7 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 
 欢迎扫码进群，一起学习和交流 Android Native / Trace / VM 相关内容。
 
-![交流群二维码](./TraceDemo/59fb9c9ea8fcff2c0c8ae12d2064b25e.jpg)
+交流群二维码
 
 ## 个人的碎碎念念
 
