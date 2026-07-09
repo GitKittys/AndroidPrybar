@@ -14,7 +14,7 @@ Examples:
   python trace_receiver.py decode trace.lz4 --stdout       # decode to stdout
   adb pull /data/data/com.xxx/trace/ . && python trace_receiver.py decode *.lz4
 
-Frame format:
+Protocol:
   Each frame: [uint32 compressed_size][uint32 original_size][uint32 tid][compressed_data]
   End of data: EOF (file) or [0, 0, 0] (TCP)
   Compression: LZ4 block format
@@ -31,6 +31,7 @@ import time
 
 DEFAULT_PORT = 9876
 FRAME_HEADER_SIZE = 12  # comp_size(4) + orig_size(4) + tid(4)
+RECV_TIMEOUT = 30       # 设备无数据超时(秒), 防 force-stop 后永久阻塞
 
 
 def lz4_decompress_block(src: bytes, original_size: int) -> bytes:
@@ -79,11 +80,19 @@ def lz4_decompress_block(src: bytes, original_size: int) -> bytes:
     return bytes(dst[:di])
 
 
-def decode_frames(read_fn):
-    """Decode LZ4 frames, yield (tid, decompressed_bytes) per frame."""
+def decode_frames(read_fn, label=""):
+    """Decode LZ4 frames, yield (tid, decompressed_bytes) per frame.
+    Truncated/corrupt final frame stops gracefully, preserving all good frames."""
+    frame_count = 0
+
     while True:
         header = read_fn(FRAME_HEADER_SIZE)
+        if len(header) == 0:
+            break
         if len(header) < FRAME_HEADER_SIZE:
+            sys.stderr.write(
+                f"[!] {label}: truncated header "
+                f"(got {len(header)}/{FRAME_HEADER_SIZE} bytes), stopping\n")
             break
         comp_size, orig_size, tid = struct.unpack("<III", header)
         if comp_size == 0:
@@ -91,9 +100,19 @@ def decode_frames(read_fn):
 
         compressed = read_fn(comp_size)
         if len(compressed) < comp_size:
+            sys.stderr.write(
+                f"[!] {label}: truncated final frame "
+                f"(got {len(compressed)}/{comp_size} bytes), stopping\n")
             break
-        decompressed = lz4_decompress_block(compressed, orig_size)
+        try:
+            decompressed = lz4_decompress_block(compressed, orig_size)
+        except Exception as e:
+            sys.stderr.write(
+                f"[!] {label}: corrupt frame #{frame_count} ({e}), "
+                f"stopping — kept {frame_count} good frames\n")
+            break
 
+        frame_count += 1
         yield tid, decompressed
 
 
@@ -126,37 +145,70 @@ def cmd_decode(args):
             print(f"[!] Not found: {input_path}", file=sys.stderr)
             continue
 
-        buffers = {}  # tid -> bytearray
+        file_size = os.path.getsize(input_path)
+        base, _ = os.path.splitext(input_path)
+
+        # 流式解码：边解边写到临时文件，不缓存到内存（GB 级 trace 不会 OOM）
+        # 先写 base_tid{N}.log，解完后如果只有单 tid 则 rename 为 base.log
+        tid_files = {}    # tid -> file handle
+        tid_paths = {}    # tid -> file path
+        tid_sizes = {}    # tid -> bytes written
         total_orig = 0
         frame_count = 0
+        bytes_read = 0
 
-        with open(input_path, "rb") as f:
-            for tid, data in decode_frames(f.read):
-                if tid not in buffers:
-                    buffers[tid] = bytearray()
-                buffers[tid].extend(data)
-                total_orig += len(data)
-                frame_count += 1
+        try:
+            with open(input_path, "rb") as f:
+                def tracked_read(n):
+                    nonlocal bytes_read
+                    data = f.read(n)
+                    bytes_read += len(data)
+                    return data
+
+                for tid, data in decode_frames(tracked_read, input_path):
+                    if tid not in tid_files:
+                        if args.stdout:
+                            tid_files[tid] = sys.stdout.buffer
+                            tid_paths[tid] = "<stdout>"
+                        else:
+                            path = f"{base}_tid{tid}.log"
+                            tid_files[tid] = open(path, "wb")
+                            tid_paths[tid] = path
+                        tid_sizes[tid] = 0
+
+                    tid_files[tid].write(data)
+                    total_orig += len(data)
+                    tid_sizes[tid] += len(data)
+                    frame_count += 1
+
+                    if file_size > 1024 * 1024 and not args.stdout:
+                        pct = bytes_read * 100 // file_size if file_size > 0 else 0
+                        print(f"\r[*] decoding {input_path}: {pct}%  "
+                              f"{total_orig/(1024*1024):.1f}MB decoded  "
+                              f"{frame_count} frames",
+                              end="", flush=True)
+        finally:
+            for tid, f in tid_files.items():
+                if f is not sys.stdout.buffer:
+                    f.flush()
+                    f.close()
+
+        if file_size > 1024 * 1024 and not args.stdout:
+            print()
 
         if args.stdout:
-            for tid in sorted(buffers):
-                sys.stdout.buffer.write(buffers[tid])
-        elif len(buffers) <= 1:
-            base, _ = os.path.splitext(input_path)
+            pass
+        elif len(tid_files) <= 1:
             out_path = args.output if (args.output and len(inputs) == 1) else base + ".log"
-            with open(out_path, "wb") as out:
-                for tid in sorted(buffers):
-                    out.write(buffers[tid])
+            for tid, src_path in tid_paths.items():
+                if src_path != out_path:
+                    os.replace(src_path, out_path)
             print(f"[+] {input_path} -> {out_path}  "
                   f"{total_orig/(1024*1024):.1f}MB  {frame_count} frames")
         else:
-            base, _ = os.path.splitext(input_path)
-            for tid, buf in sorted(buffers.items()):
-                out_path = f"{base}_tid{tid}.log"
-                with open(out_path, "wb") as out:
-                    out.write(buf)
-                print(f"[+] {input_path} tid={tid} -> {out_path}  "
-                      f"{len(buf)/(1024*1024):.1f}MB")
+            for tid in sorted(tid_paths):
+                print(f"[+] {input_path} tid={tid} -> {tid_paths[tid]}  "
+                      f"{tid_sizes[tid]/(1024*1024):.1f}MB")
 
 
 # ── receive subcommand ──
@@ -221,6 +273,7 @@ def cmd_receive(args):
 
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    sock.settimeout(RECV_TIMEOUT)
     print("[+] Connected!")
 
     out_base = args.output
@@ -244,7 +297,13 @@ def cmd_receive(args):
                 break
 
             compressed = recv_exact(sock, comp_size)
-            decompressed = lz4_decompress_block(compressed, orig_size)
+            try:
+                decompressed = lz4_decompress_block(compressed, orig_size)
+            except Exception as e:
+                sys.stderr.write(
+                    f"\n[!] corrupt frame #{frame_count} ({e}), "
+                    f"stopping — kept {frame_count} good frames\n")
+                break
 
             if tid not in tid_files:
                 if args.stdout:
@@ -277,6 +336,8 @@ def cmd_receive(args):
                     f"[{info}]",
                     end="", flush=True,
                 )
+    except socket.timeout:
+        print(f"\n[!] No data for {RECV_TIMEOUT}s — device likely stopped/crashed")
     except ConnectionError:
         print("\n[!] Connection lost")
     except KeyboardInterrupt:
@@ -285,6 +346,7 @@ def cmd_receive(args):
         sock.close()
         for tid, f in tid_files.items():
             if f is not sys.stdout.buffer:
+                f.flush()
                 f.close()
         if adb_forwarded:
             remove_adb_forward(args.port)
