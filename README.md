@@ -47,7 +47,7 @@ int result = fn(1, 2);  // 在 VM 中执行
 vc_free(ctx);
 ```
 
-### replace_trace() — 这个是我用dobbyhook简单的封装了一下trace()而已,是inlinehook.不建议使用
+### replace_trace() — inline hook 式 trace（一般用不到）
 
 ```cpp
 replace_trace((void*)func_addr, "/data/data/pkg/trace_dir");
@@ -367,7 +367,7 @@ so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem
 3. **原子指令测试** — LDXR/STXR/CAS/SWP/LDADD + std::atomic 正确性验证
 4. **普通 trace 示例** — 最小接入路径
 
-运行后在 `filesDir` 下生成日志文件，界面输出中显示完整路径。
+运行后在 `filesDir` 下生成 LZ4 日志文件，界面输出中显示完整路径。用 `python tools/trace_receiver.py decode *.lz4` 还原为纯文本。
 
 ## 项目结构
 
