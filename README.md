@@ -23,7 +23,7 @@ ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 U
 // 本地文件输出（LZ4 压缩，per-thread 自动分 .lz4 文件）
 auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir");
 fn(123);                       // 调用 → 自动写 trace 日志
-freeTrace((uint64_t)fn);       // 用完释放
+freeTrace((uint64_t)fn);       // 用完释放，也可以不用释放，没必要
 // 输出文件在 trace_dir/ 下，用 trace_receiver.py decode *.lz4 还原为文本
 
 // TCP 远程输出（LZ4 压缩，实时传到 PC，适合超大 trace）,在使用的时候adb forward该端口即可
