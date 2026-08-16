@@ -459,7 +459,7 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 
 欢迎大家扫码进群，一起学习和交流 Android Native / Trace / VM 相关内容。
 
-![群聊：import FacaiTrace](TraceDemo/59fb9c9ea8fcff2c0c8ae12d2064b25e.jpg)
+![群聊：import FacaiTrace](TraceDemo/32ce27fb2dd97b7f677f0850e37aa5d5.jpg)
 
 ## 个人的碎碎念念
 
