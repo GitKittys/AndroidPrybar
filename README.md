@@ -5,6 +5,10 @@ ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 U
 
 本工程已包含预编译的 `libtrace.so`、头文件和 JNI 示例。克隆后直接编译运行即可查看结果。
 
+## 更新记录
+
+- 修复了部分 bug
+
 ## `libtrace.so` 在哪里
 
 预编译动态库：`app/src/main/jniLibs/arm64-v8a/libtrace.so`
@@ -32,6 +36,26 @@ auto fn2 = (int(*)(int))trace((void*)target_func, "tcp:9876");
 fn2(123);
 freeTrace((uint64_t)fn2);
 ```
+
+### 自动追踪被 trace 函数内部创建的线程（默认开）
+
+`trace()` **默认开启**：被 trace 的函数内部 `pthread_create` 创建的线程（入口落在目标 SO 内的），
+自动也进 VM 执行并产生独立 trace，不用手动为每个线程函数单独 `trace()`。
+
+```cpp
+// 默认就开着，直接 trace 即可，内部 pthread_create 的线程自动被追踪
+auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir");
+fn(123);
+
+// 不想追踪线程 → 3 参拿 ctx 关掉
+vm_context* ctx = nullptr;
+auto fn2 = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir", &ctx);
+vc_set_auto_trace_threads(ctx, false);   // 关闭
+```
+
+- **文件模式**：子线程文件名带父函数，`父+0xOFF__sub__子+0xOFF_tidN_0.lz4`，`ls` 一眼看出是谁开的线程，同父线程排一起。
+- **TCP 模式**：子线程复用同一连接，接收端按 tid 分文件（无父前缀，帧只带 tid）。
+- 只包**目标 SO 内**的线程函数，跳过 libc/ART 内部线程（不会把系统内部线程全拖进 VM）。
 
 ### vc_make_handle — 带回调的 VM 执行
 
@@ -342,6 +366,7 @@ so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem
 | `vc_set_jump_blacklist(names, ranges, n)`         | 设置跳转黑名单                                        |
 | `vc_clear_jump_blacklist()`                       | 清除黑名单                                          |
 | `vc_set_external_jump_enabled(enabled)`           | 全局跳转开关                                         |
+| `vc_set_auto_trace_threads(ctx, enable)`          | 自动追踪被 trace 函数内部创建的线程（trace() 默认开；3 参拿 ctx 传 false 可关）  |
 | `trace_read / trace_write`                        | 内存监控                                           |
 
 
@@ -458,6 +483,8 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 ## 交流群 / 联系方式
 
 欢迎大家扫码进群，一起学习和交流 Android Native / Trace / VM 相关内容。
+
+作者微信：`klovemh3344`
 
 ![群聊：import FacaiTrace](TraceDemo/32ce27fb2dd97b7f677f0850e37aa5d5.jpg)
 
