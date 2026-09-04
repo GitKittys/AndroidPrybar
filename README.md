@@ -1,12 +1,16 @@
 # AndroidPrybar
 
-ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 Unicorn 引擎中执行，暴露每条指令、外部调用、SVC、内存访问的全部细节。
-支持多进程，多线程，多并发，多个函数同时追踪，测试抖音，美团，等大型app均无崩溃情况。
+ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任意 native 函数放进 Unicorn 引擎里执行，你能像调试器一样完全掌控它：逐指令 / 基本块 / 内存 / SVC / 外部调用 hook、读写寄存器、单步、断点、CPU 快照、反汇编。
+
+**重点：**`trace()` **只是我们在这套 VCPU API 之上包出来的开箱即用工具之一，不是全部。** 不想写代码 → 直接 `trace()` 一键出日志；想精细控制 → 直接拿底层 VCPU（`vc_make_handle` + 各类 hook + 寄存器读写 + 单步/断点/快照）自己驱动。`trace()` / `trace_unidbg_dump()` / `replace_trace()` 本质都是这层 VCPU 的封装——比如 `trace()` 就是「`vc_make_handle` + 注册逐指令 hook + 把每条指令格式化写盘」。
+支持多进程，多线程，多并发，多个函数同时追踪，测试抖音，美团，等大型app均无崩溃情况。  
 
 本工程已包含预编译的 `libtrace.so`、头文件和 JNI 示例。克隆后直接编译运行即可查看结果。
 
 ## 更新记录
 
+- 新增 `vc_set_trace_crash_flush()`：app 崩溃/终止/exit 前强制把 trace 缓冲刷到磁盘，不丢崩溃点之前那段
+- `trace_receiver.py` 解压改用 lz4 C 引擎（`pip install lz4`），decode 大幅加速；未安装则自动回退纯 Python
 - 新增 `trace_unidbg_dump()`：一键导出 Unidbg「中段执行」dump 包（内存段/寄存器/参数/符号/JNI 表/maps/rootfs）
 - README 增加 Frida 调用 `trace()` 的示例
 - 修复了部分 bug
@@ -20,6 +24,13 @@ ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 U
 ---
 
 ## 快速上手
+
+> **两层用法，按需选：**
+>
+> - **开箱即用的包装**（不写逻辑、一键出结果）：`trace()`、`trace_unidbg_dump()`、`replace_trace()`。
+> - **底层 VCPU**（自己写回调、掌控执行）：`vc_make_handle()` + `vc_hook_add()` + 寄存器读写 + 单步 / 断点 / CPU 快照 / 反汇编。
+>
+> 上面的包装**全部基于**下面的 VCPU API 实现。所以你既能当"一键 trace 工具"用，也能当"可编程 ARM64 VCPU"用——同一套东西。
 
 ### trace() — 最简路径，一键出日志,一般用这个就够了,第二个参数是指定一个路径,不要指定名字,它支持多线程调用的,你用的时候,trace这个包装函数会返回一个同等功能的函数指针,你直接用inlinehook或者无痕hook等手段替换到原来地址,等app自己调用,或者你来传参调用都可以
 
@@ -56,29 +67,51 @@ const wrapper = trace(target, path);      // 返回同签名的包装函数指�
 Interceptor.replace(target, wrapper);     // 替换到原地址，之后 app 调用自动走 VM trace
 ```
 
-### 自动追踪被 trace 函数内部创建的线程（默认开）
+### 自动追踪被 trace 函数内部创建的线程（可选，默认关）
 
-`trace()` **默认开启**：被 trace 的函数内部 `pthread_create` 创建的线程（入口落在目标 SO 内的），
-自动也进 VM 执行并产生独立 trace，不用手动为每个线程函数单独 `trace()`。
+开启后：被 trace 的函数内部 `pthread_create` 创建的线程，其入口函数自动也进 VM 执行、产生独立 trace，
+不用手动为每个线程函数单独 `trace()`。**默认关**，用 3 参拿 `ctx` 后 `vc_set_auto_trace_threads(ctx, true)` 开。
 
 ```cpp
-// 默认就开着，直接 trace 即可，内部 pthread_create 的线程自动被追踪
-auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir");
-fn(123);
-
-// 不想追踪线程 → 3 参拿 ctx 关掉
+// 3 参拿 ctx，开启自动线程追踪（默认是关的）
 vm_context* ctx = nullptr;
-auto fn2 = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir", &ctx);
-vc_set_auto_trace_threads(ctx, false);   // 关闭
+auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir", &ctx);
+vc_set_auto_trace_threads(ctx, true);    // 开启
+fn(123);                                 // 内部 pthread_create 的线程自动被追踪
 ```
 
-- **文件模式**：子线程文件名带父函数，`父+0xOFF__sub__子+0xOFF_tidN_0.lz4`，`ls` 一眼看出是谁开的线程，同父线程排一起。
+**怎么做到的**：在 `pthread_create` 处下一个地址锁定的 block hook，把它的 `start_routine`（x2）换成
+`trace()` 包装过的版本 —— 新线程一启动就在 VM 里跑、自动出 trace。地址锁定 = 只在命中该点才进回调，
+其它块零开销。
+
+- **递归成线程树**：子线程内部再 `pthread_create` 开的孙线程，一样被自动追踪，整棵线程树都覆盖。
+- **文件模式**：子线程文件名带父函数，`父+0xOFF__sub__子+0xOFF_tidN_0.lz4`，`ls` 一眼看出谁开的线程、同父排一起。
 - **TCP 模式**：子线程复用同一连接，接收端按 tid 分文件（无父前缀，帧只带 tid）。
-- 只包**目标 SO 内**的线程函数，跳过 libc/ART 内部线程（不会把系统内部线程全拖进 VM）。
+- **只追这些**：入口落在**目标 SO 内**、且经 `pthread_create` 新建的线程。**不追**：trace() 之前就已存在的线程、入口在 libc/ART 等系统库的线程（不会把系统内部线程全拖进 VM）。
 
+### 崩溃 / 退出前保住 trace（可选）
 
+> **Q：用 trace 找检测点，但 app 一检测到环境异常就崩，trace 不完整怎么办？**
+> **A：**`vc_set_trace_crash_flush(true)` —— 崩溃前自动把 trace 刷到盘，崩溃点之前的全保住。
 
-### vc_make_handle — 带回调的 VM 执行
+逆向常遇到"目标跑着跑着崩了"，默认崩溃时缓冲里没落盘的那段 trace 就丢了、正好看不到"崩在哪"。
+开这个开关：进程**崩溃**（SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE）、被**终止**（SIGTERM/SIGINT）、
+或正常 **exit** 前，自动把还在缓冲里的 trace 抢救到盘（补最后一行 → 刷缓冲 → 关文件），刷完再走原来的
+崩溃流程（tombstone 照出，不吞崩溃）。
+
+```cpp
+vc_set_trace_crash_flush(true);   // 装一次即可，建议 trace(),这里会安装信号处理器，让trace日志强制刷新到磁盘。
+auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir");
+fn(123);                          // 就算 fn 里崩了，崩溃点之前的 trace 也已落盘
+```
+
+- 仅**文件模式**（`.lz4`）；TCP 模式本就实时流、不受影响。
+- 信号处理器里只做「刷 + 关」，**不做释放**（崩溃时 malloc/锁可能被占，释放会死锁），尽力而为抢数据。
+
+### vc_make_handle — 底层 VCPU（`trace()` 就是基于它包的）
+
+这是整个框架的核心：把目标函数变成一个"VM 托管的可调用句柄"，你注册 hook、读写寄存器、单步执行，
+完全掌控它的运行。上面所有 `trace*` 包装都是在它之上加了默认 hook 而已。
 
 ```cpp
 vm_context* ctx = nullptr;
@@ -92,8 +125,6 @@ int result = fn(1, 2);  // 在 VM 中执行
 vc_free(ctx); //不调用也行，释放资源而已
 ```
 
-
-
 ### replace_trace() — inline hook 式 trace（一般用不到）
 
 ```cpp
@@ -101,8 +132,6 @@ replace_trace((void*)func_addr, "/data/data/pkg/trace_dir");
 // 之后所有对 func_addr 的调用都自动走 VM trace
 restore_function((void*)func_addr);  // 恢复原函数
 ```
-
-
 
 ### trace_unidbg_dump() — 一键导出 Unidbg「中段执行」dump 包
 
@@ -125,17 +154,29 @@ h(env, input);                        // 跑一遍；执行完毕会被监听到
 trace_unidbg_dump_finish((void*)h);
 ```
 
-
-
-
-
 > 落盘是靠「执行完毕」监听（目标函数一返回就自动落盘），不依赖 finish。finish 只负责释放，
 > 且不能自动做——释放必须在调用返回之后，不能在还在 VM 里跑的时候拆自己。
 
 多次调用 `h(...)`（换不同参数走不同分支）会**增量累积**到同一目录：已 dump 过的内存页下次跳过，
 适合多输入多跑把覆盖补全。
 
-**导出的文件（直接喂给 Unidbg）：**
+**可选：同时出完整指令 trace**（第 3 参 `withTrace=true`）
+
+```cpp
+auto h = (原签名)trace_unidbg_dump((void*)func, "/data/.../dump", true);
+h(args...);   // 同一次运行：dump 落 dump/ 下，完整逐指令 trace 落 dump/trace/*.lz4
+```
+
+这样你既有「中段执行快照」（dump 包），又有「这次真实运行的完整流水」。灌进 Unidbg 从入口重放时，
+一旦行为和 trace 对不上，直接看 trace 就知道是哪一步、哪个环境没补对——相当于有份完整录像可回看。
+代价：全程逐指令 trace 会**慢很多**（trace 本就 ~50-100x），所以默认关。trace 用
+`trace_receiver.py decode dump/trace/*.lz4` 还原。
+
+**支持多线程**：wrapper 替换到原地址后被 app 多线程并发调用时，**每条线程各出一份完整 dump**，
+落到 `dumpDir/tid{N}/`（每线程一个子目录，互不干扰；单线程调用也是一个 `tid{N}/` 子目录）。喂 Unidbg
+时选你要分析的那条线程的 `tid{N}/` 即可。
+
+**每个** `dumpDir/tid{N}/` **里导出这些文件（直接喂给 Unidbg）：**
 
 
 | 文件                   | 内容                                                                            |
@@ -156,11 +197,44 @@ trace_unidbg_dump_finish((void*)h);
 
 ---
 
+## 不满意自带的 trace？直接用底层 Hook 自己包
 
+前面那些 `trace*` 都是成品；**真正的乐高积木是这一层 Hook**——它就是对 Unicorn hook API 的一层薄封装
+（只是把类型换成 `vm_context*` + `vc_*`，你无需引入任何引擎头文件）。
 
-## Hook 类型与回调
+**上面所有开箱即用的 trace，全是拿这些 Hook 拼出来的**，套路完全一样：
 
-每种 hook 类型有对应的回调签名：
+> `vc_make_handle` 拿句柄 → `vc_hook_add` 注册你要的 hook → **回调里写你自己的逻辑** → 调用函数。
+
+- `trace()` 本质 = `vc_make_handle` + 一个 `VC_HOOK_CODE`（逐指令）回调，回调里把「反汇编 + 寄存器 + 访存」格式化写盘；
+- `trace_unidbg_dump()` = `vc_make_handle` + `VC_HOOK_BLOCK` / `MEM` / `SVC` / `EMU_STOP` 几个 hook 采样落盘。
+
+所以自带的不够用时**不用改我们的代码**——直接注册下面这些 Hook，在回调里干你想干的：记录、改寄存器、
+篡改返回值、下断、单步、按地址过滤……随你。
+
+**完整流程**（创建句柄 → 加回调 → 调用 → 释放）：
+
+```cpp
+#include "ARM64Emulator.h"
+
+// ① 创建 VCPU 句柄：把目标函数包成一个同签名、可调用的指针
+vm_context* ctx = nullptr;
+auto fn = (int(*)(int))vc_make_handle((void*)target_func, &ctx);
+
+// ② 往这个句柄上挂回调（可挂多个、不同类型；begin/end 传 0 表示全程生效，
+//    传地址段则只在该范围触发。回调实现见下面）
+vc_hook_h h1, h2;
+vc_hook_add(ctx, &h1, VC_HOOK_EXTERNAL_JUMP, (void*)my_jump_cb, nullptr, 0, 0);
+vc_hook_add(ctx, &h2, VC_HOOK_MEM_WRITE,     (void*)my_mem_cb,  nullptr, 0, 0);
+
+// ③ 调用 → 目标函数在 VCPU 里跑，期间触发上面注册的回调
+int r = fn(123);
+
+// ④ 释放（不调也行，仅回收资源）
+vc_free(ctx);
+```
+
+上面第 ② 步挂的回调，按 hook 类型各有对应签名，实现长这样： 
 
 ```cpp
 // 拦截外部函数调用（最常用）
@@ -192,26 +266,22 @@ void my_mem_cb(vm_context* ctx, vc_mem_type type,
 }
 ```
 
+### Hook 类型速查，详细的签名请看头文件
 
 
-### Hook 类型速查
-
-
-| 类型                       | 回调签名               | 用途           |
-| ------------------------ | ------------------ | ------------ |
-| `VC_HOOK_BLOCK`          | `vc_cb_hookcode_t` | 每个基本块入口      |
-| `VC_HOOK_CODE`           | `vc_cb_hookcode_t` | 每条指令（慢 ~10x） |
-| `VC_HOOK_INTR`           | `vc_cb_hookintr_t` | 中断（含 SVC）    |
-| `VC_HOOK_MEM_READ`       | `vc_cb_hookmem_t`  | 内存读          |
-| `VC_HOOK_MEM_WRITE`      | `vc_cb_hookmem_t`  | 内存写          |
-| `VC_HOOK_MEM_READ_AFTER` | `vc_cb_hookmem_t`  | 内存读后（有值）     |
-| `VC_HOOK_SVC`            | `vc_cb_hooksvc_t`  | SVC 系统调用     |
-| `VC_HOOK_EXTERNAL_JUMP`  | `vc_cb_hookjump_t` | 外部函数调用       |
+| 类型                       | 回调签名               | 用途          |
+| ------------------------ | ------------------ | ----------- |
+| `VC_HOOK_BLOCK`          | `vc_cb_hookcode_t` | 每个基本块入口     |
+| `VC_HOOK_CODE`           | `vc_cb_hookcode_t` | 每条指令执行触发一次。 |
+| `VC_HOOK_INTR`           | `vc_cb_hookintr_t` | 中断（含 SVC）   |
+| `VC_HOOK_MEM_READ`       | `vc_cb_hookmem_t`  | 内存读         |
+| `VC_HOOK_MEM_WRITE`      | `vc_cb_hookmem_t`  | 内存写         |
+| `VC_HOOK_MEM_READ_AFTER` | `vc_cb_hookmem_t`  | 内存读后（有值）    |
+| `VC_HOOK_SVC`            | `vc_cb_hooksvc_t`  | SVC 系统调用    |
+| `VC_HOOK_EXTERNAL_JUMP`  | `vc_cb_hookjump_t` | 外部函数调用      |
 
 
 ---
-
-
 
 ## 寄存器读写
 
@@ -236,11 +306,7 @@ vc_reg_read(ctx, VC_REG_Q0, &q0);
 
 ---
 
-
-
 ## 跳转控制
-
-
 
 ### 默认行为
 
@@ -250,8 +316,6 @@ vc_reg_read(ctx, VC_REG_Q0, &q0);
 | 目标 SO       | VM 内执行   |
 | 其他用户 SO     | VM 内执行   |
 | 系统库（libc 等） | 跳出到 host |
-
-
 
 
 ### blacklist — 强制指定 SO 跳出到 host
@@ -269,8 +333,6 @@ vc_set_jump_blacklist(nullptr, ranges, 1);
 vc_clear_jump_blacklist();
 ```
 
-
-
 ### 全局开关
 
 ```cpp
@@ -279,8 +341,6 @@ vc_set_external_jump_enabled(false);
 ```
 
 ---
-
-
 
 ## 单步与受控执行
 
@@ -296,8 +356,6 @@ vc_single_step(ctx, 100);    // 执行 100 条后暂停
 vc_set_until(ctx, target_addr);
 vc_set_until(ctx, 0);  // 手动清除
 ```
-
-
 
 ### 类 LLDB 调试器示例
 
@@ -325,8 +383,6 @@ void debugger_cb(vm_context* ctx, uint64_t addr, uint32_t size, void* ud) {
 
 ---
 
-
-
 ## 反汇编 API
 
 ```cpp
@@ -341,8 +397,6 @@ for (int i = 0; i < count; i++) {
 ```
 
 ---
-
-
 
 ## VM 控制
 
@@ -362,8 +416,6 @@ const char* sym = vc_lookup_symbol(ctx, address);
 ```
 
 ---
-
-
 
 ## 内存监控
 
@@ -386,65 +438,82 @@ vc_hook_add(ctx, &hh, VC_HOOK_MEM_WRITE, (void*)mem_watch, nullptr,
 
 ---
 
+## 实战示例：运行时修改寄存器 / 返回值
 
+VCPU 的典型用法是**在函数执行途中读改它的 CPU 状态**——篡改返回值、改入参、强行改走某条分支。
+因为整个函数在我们引擎里跑，任意时刻的寄存器都可读可写。（注：单纯"绕检测"用 inline hook 往往更直接，
+这里展示的是 VCPU 独有的"运行时精确改状态"能力。）
 
-## 实战示例：绕过环境检测
+**① 改某个被调用函数的返回值** —— 拦外部调用 → 写 X0 → `SKIP` 跳过真实调用
 
 ```cpp
-void anti_detect(vm_context* ctx, uint64_t addr,
-                 const char* sym, vc_event_action* action, void* ud) {
-    if (!sym) return;
-
-    if (strcmp(sym, "access") == 0) {
-        uint64_t path_ptr;
-        vc_reg_read(ctx, VC_REG_X0, &path_ptr);
-        const char* path = (const char*)path_ptr;
-        if (strstr(path, "su") || strstr(path, "magisk")) {
-            uint64_t ret = (uint64_t)-1;
-            vc_reg_write(ctx, VC_REG_X0, &ret);
-            *action = VC_ACTION_SKIP;
-        }
-    }
-    else if (strcmp(sym, "getuid") == 0) {
-        uint64_t ret = 10000;
-        vc_reg_write(ctx, VC_REG_X0, &ret);
-        *action = VC_ACTION_SKIP;
-    }
-    else if (strcmp(sym, "exit") == 0 || strcmp(sym, "abort") == 0) {
-        *action = VC_ACTION_SKIP;
+void patch_ret(vm_context* ctx, uint64_t addr, const char* sym,
+               vc_event_action* action, void* ud) {
+    if (sym && strcmp(sym, "check_license") == 0) {
+        uint64_t ok = 1;
+        vc_reg_write(ctx, VC_REG_X0, &ok);   // 让 check_license() 返回 1
+        *action = VC_ACTION_SKIP;            // 不真正执行它，直接用我们写的返回值
     }
 }
-
-vm_context* ctx = nullptr;
-auto fn = (int(*)())vc_make_handle((void*)target, &ctx);
-vc_hook_h hh;
-vc_hook_add(ctx, &hh, VC_HOOK_EXTERNAL_JUMP, (void*)anti_detect, nullptr, 0, 0);
-fn();
-vc_free(ctx);
+vc_hook_add(ctx, &hh, VC_HOOK_EXTERNAL_JUMP, (void*)patch_ret, nullptr, 0, 0);
 ```
+
+**② 在指定指令处篡改寄存器，强改分支走向** —— BLOCK/CODE hook 限定地址段
+
+```cpp
+// 在 base+0x1240（某个 cmp 之前）把 x0 强设为 0，让后面的 cbnz 不跳转
+void force_branch(vm_context* ctx, uint64_t pc, uint32_t size, void* ud) {
+    uint64_t zero = 0;
+    vc_reg_write(ctx, VC_REG_X0, &zero);     // 直接改运行中的寄存器
+}
+uint64_t at = base + 0x1240;
+vc_hook_add(ctx, &hh, VC_HOOK_BLOCK, (void*)force_branch, nullptr, at, at + 4);
+```
+
+**③ 调用前篡改入参** —— 改传给某函数的参数寄存器，但仍真实调用
+
+```cpp
+void patch_arg(vm_context* ctx, uint64_t addr, const char* sym,
+               vc_event_action* action, void* ud) {
+    if (sym && strcmp(sym, "memcmp") == 0) {
+        uint64_t n = 0;
+        vc_reg_write(ctx, VC_REG_X2, &n);    // 把 memcmp 的长度 x2 改成 0 → 恒返回相等
+        // 不设 SKIP：仍真实执行 memcmp，只是用我们改过的参数
+    }
+}
+```
+
+组装照常：`vc_make_handle` 拿句柄 → `vc_hook_add` 注册上面的回调 → 调用 → `vc_free`。
 
 ---
 
+## trace 格式摘要
 
+`.lz4` 用 `trace_receiver.py decode` 还原后每行一条指令。看几行真实例子就懂有哪些格式：
 
-## trace 输出格式
+```text
+# 普通指令：so+偏移 PC: 指令  读寄存器 => 写回寄存器(新值)
+libtest.so+0x4e40 0x76981c4e40: add x0, x1, #0x10  x1=0x20 => x0=0x30
 
-trace 输出为 LZ4 压缩格式（`.lz4` 文件），用 `trace_receiver.py decode` 还原为文本。
+# 访存 mem_r/mem_w[地址 归属]=值 —— 归属直接标出是哪块内存：
+libz.so+0xa1d4 ...: ldr x14, [x10] => x14=0x726f..  mem_r[0x707167a760 libtest.so+0x1a760:code] str:"o UnicornTrace VM!"   # SO段+偏移(对IDA)，地址是串就打出来
+libssl.so+0x3b0 ...: ldr x0, [x8]                    mem_r[0x72aa5d3000 libssl.so+0x1a300:ro AES_Td+0x40]                  # 命中导出符号
+libtest.so+0x9a70 ...: stp x29,x30,[sp,#-0x30]! => sp=0x70..  mem_w[0x70719f6ff0 [anon:stack_and_tls:9059]]=0x70..        # 栈
+libfoo.so+0x1200 ...: str w0, [x9]                   mem_w[0x71b0640010 [anon:scudo:primary]]=0x1                          # 堆(scudo)
+libfoo.so+0x1300 ...: ldr w0, [x9]                   mem_r[0x72d0aa1000 [anon:.bss]]                                       # BSS
 
-还原后每行一条指令：
-
+# 外部调用 / JNI / 系统调用 / 返回值
+libtest.so+0x..: bl  ...   [CALL] memcpy(dst=0x.., src=0x.., n=0x40)
+libtest.so+0x..: blr x8    >>> JNIEnv->FindClass("java/lang/String") => 0x1
+libtest.so+0x..: svc #0    [SVC #56] openat(AT_FDCWD, "/data/.../config", O_RDONLY)
+libtest.so+0x..: ret       x0=0x0
 ```
-so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem_w[0xADDR]=VAL
-```
 
-- **str:"..."** — 访问地址是 C 字符串时完整输出
-- **->"..."** — 加载的值是字符串指针时输出指向的字符串
-- **[CALL] func(args)** — 外部函数调用
-- **>>> JNIEnv->Method()** — JNI 调用
+- 归属：命名 SO 标 `so+0x偏移:ro/code/rw`(+ 导出符号)，直接对 IDA；匿名标 `[stack]`/`[anon:scudo:*]`(堆)/`[anon:.bss]`(BSS)/`[anon:stack_and_tls:TID]` —— **栈 / 堆 / BSS 一眼分清**。
+- 其它：SIMD `qN=0x<32hex>`、标志 `nzcv: N=.,Z=.,C=.,V=.`、`str:"…"`(地址是串) / `->"…"`(值是串指针)。
+- 多线程每线程一个 `.lz4`(名字带父函数)；TCP 模式按 tid 自动分文件。
 
 ---
-
-
 
 ## API 速查表
 
@@ -473,10 +542,9 @@ so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem
 | `vc_set_jump_blacklist(names, ranges, n)`         | 设置跳转黑名单                                                |
 | `vc_clear_jump_blacklist()`                       | 清除黑名单                                                  |
 | `vc_set_external_jump_enabled(enabled)`           | 全局跳转开关                                                 |
-| `vc_set_auto_trace_threads(ctx, enable)`          | 自动追踪被 trace 函数内部创建的线程（trace() 默认开；3 参拿 ctx 传 false 可关） |
+| `vc_set_auto_trace_threads(ctx, enable)`          | 自动追踪被 trace 函数内部创建的线程（**默认关**；3 参拿 ctx 传 true 开启） |
+| `vc_set_trace_crash_flush(enable)`                | 崩溃/终止/exit 前自动把 trace 缓冲刷到盘（文件模式），不丢崩溃前那段              |
 | `trace_read / trace_write`                        | 内存监控                                                   |
-
-
 
 
 ## 性能参考
@@ -491,8 +559,6 @@ so+0xOFFSET 0xPC: mnemonic operands reg_reads => reg_writes  mem_r[0xADDR] / mem
 
 
 ---
-
-
 
 ## Demo 工程说明
 
@@ -521,15 +587,18 @@ AndroidPrybar/
 `-- README.md
 ```
 
-
-
 ## 附带工具
-
-
 
 ### `tools/trace_receiver.py` — LZ4 解码 + TCP 接收
 
 trace 输出统一为 LZ4 压缩格式（`.lz4` 文件），压缩比约 7-8x。本工具负责解码和 TCP 接收。
+
+> **提速：**装依赖后解压走 C 引擎，decode 大文件快很多；不装也能用（自动回退纯 Python 实现，只是慢）。
+>
+> ```bash
+> pip install lz4                        # 或
+> pip install -r tools/requirements.txt
+> ```
 
 #### 解码本地 .lz4 文件
 
@@ -545,8 +614,6 @@ python tools/trace_receiver.py decode *.lz4                  # 批量解码所�
 python tools/trace_receiver.py decode trace.lz4 --stdout     # 输出到 stdout（可 pipe 给 grep 等）
 python tools/trace_receiver.py decode trace.lz4 -o out.log   # 指定输出文件名
 ```
-
-
 
 #### TCP 远程接收（适合超大 trace）
 
@@ -566,8 +633,6 @@ python tools/trace_receiver.py receive --no-adb --host 192.168.1.x  # WiFi 直�
 python tools/trace_receiver.py receive --stdout              # 输出到 stdout
 ```
 
-
-
 #### 多线程输出
 
 trace 支持多线程并发调用，每个线程的 trace 数据带有 tid 标识：
@@ -582,8 +647,6 @@ trace 支持多线程并发调用，每个线程的 trace 数据带有 tid 标�
 [*] frames=42  total=3.2MB  ratio=7.6x  speed=12.5MB/s  [t1234:2.1M t5678:1.1M]
 ```
 
-
-
 ### `tools/build_calltree.py` — trace → 函数调用树
 
 从 trace 重建函数调用树/调用图（谁调了谁、各函数调用次数）。脚本侧建树，部分/被打断的 trace 也能建；新引擎的多线程输出（每线程一文件的目录）传目录即自动每线程一棵树。
@@ -593,8 +656,6 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 # 输出: <base>_calltree.txt(调用树) + <base>_callgraph.txt(调用图/计数)
 ```
 
-
-
 ### `.claude/skills/unicorn-trace/` — Claude Code 用法 skill
 
 本仓库内置一个 **Claude Code skill：**`unicorn-trace`。用 Claude Code 打开本仓库干活时，它会自动带上 libtrace 的完整用法，AI 直接知道怎么调 `trace()` / `vc_make_handle` / 各类 hook，不用每次解释。
@@ -602,8 +663,6 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 - `SKILL.md`：精简速查（两个入口、API 速查表、Hook 类型、实战示例索引、trace 格式、性能、限制）。
 - `GUIDE.md`：完整指南（完整 API + 实战示例 + trace 格式）。
 - 想在别的项目用：把 `.claude/skills/unicorn-trace/` 复制到那个项目的 `.claude/skills/` 或用户级 `~/.claude/skills/`。
-
-
 
 ## 交流群 / 联系方式
 

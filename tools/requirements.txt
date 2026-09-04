@@ -1,0 +1,6 @@
+# trace_receiver.py 依赖
+#   安装：pip install -r tools/requirements.txt
+
+# LZ4 C 引擎，用于加速 .lz4 trace 解压（decode）。
+# 不装也能跑：脚本会自动回退到内置的纯 Python 解压实现，只是慢很多。
+lz4>=4.0.0

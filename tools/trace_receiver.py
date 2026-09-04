@@ -34,7 +34,35 @@ FRAME_HEADER_SIZE = 12  # comp_size(4) + orig_size(4) + tid(4)
 RECV_TIMEOUT = 30       # 设备无数据超时(秒), 防 force-stop 后永久阻塞
 
 
+# 优先用 lz4 包的 C 引擎解压（比纯 Python 快 ~50-100x）。
+# 装它：pip install lz4  —— 没装则自动回退到下面的纯 Python 实现。
+try:
+    import lz4.block as _lz4_block  # C 扩展
+    _HAVE_LZ4_C = True
+except ImportError:
+    _HAVE_LZ4_C = False
+
+_lz4_hint_shown = False
+
+
+def _warn_no_lz4_c():
+    global _lz4_hint_shown
+    if not _lz4_hint_shown:
+        _lz4_hint_shown = True
+        sys.stderr.write(
+            "[!] 未检测到 lz4 C 引擎，正在用纯 Python 解压（慢很多）。\n"
+            "    提速请安装依赖：  pip install lz4\n"
+            "    或：              pip install -r tools/requirements.txt\n")
+
+
 def lz4_decompress_block(src: bytes, original_size: int) -> bytes:
+    if _HAVE_LZ4_C:
+        return _lz4_block.decompress(src, uncompressed_size=original_size)
+    _warn_no_lz4_c()
+    return _lz4_decompress_block_py(src, original_size)
+
+
+def _lz4_decompress_block_py(src: bytes, original_size: int) -> bytes:
     dst = bytearray(original_size)
     si, di = 0, 0
     slen = len(src)
