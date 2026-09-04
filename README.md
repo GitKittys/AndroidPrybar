@@ -7,6 +7,8 @@ ARM64 函数级 VM 执行与指令跟踪框架。把任意 native 函数放进 U
 
 ## 更新记录
 
+- 新增 `trace_unidbg_dump()`：一键导出 Unidbg「中段执行」dump 包（内存段/寄存器/参数/符号/JNI 表/maps/rootfs）
+- README 增加 Frida 调用 `trace()` 的示例
 - 修复了部分 bug
 
 ## `libtrace.so` 在哪里
