@@ -2,18 +2,11 @@
 
 ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任意 native 函数放进 Unicorn 引擎里执行，你能像调试器一样完全掌控它：逐指令 / 基本块 / 内存 / SVC / 外部调用 hook、读写寄存器、单步、断点、CPU 快照、反汇编。
 
-**重点：**`trace()` **只是我们在这套 VCPU API 之上包出来的开箱即用工具之一，不是全部。** 不想写代码 → 直接 `trace()` 一键出日志；想精细控制 → 直接拿底层 VCPU（`vc_make_handle` + 各类 hook + 寄存器读写 + 单步/断点/快照）自己驱动。`trace()` / `trace_unidbg_dump()` / `replace_trace()` 本质都是这层 VCPU 的封装——比如 `trace()` 就是「`vc_make_handle` + 注册逐指令 hook + 把每条指令格式化写盘」。
-支持多进程，多线程，多并发，多个函数同时追踪，测试抖音，美团，等大型app均无崩溃情况。  
+**`trace()` 只是这套 VCPU 之上的开箱工具之一,不是全部。** 不想写代码就直接 `trace()` 一键出日志;想精细控制就拿底层 VCPU（`vc_make_handle` + 各类 hook + 寄存器读写 + 单步/断点/快照）自己驱动——`trace()` / `trace_unidbg_dump()` / `replace_trace()` 都是这层 VCPU 的封装。
 
-本工程已包含预编译的 `libtrace.so`、分离好的头文件,以及一个最简命令行示例(`demo/`,纯 C 用法、无 app 壳)。
+VCPU 是闭源的引擎内核,`trace/` 则是它上面一层**开源**的示范应用(与 VCPU 的解耦由 AI 完成,只通过公开 `vc_*` 接口调用)。所以 trace 源码本身就是「这套 VCPU 怎么用」的最佳范例;想定制就拿它当模板改,`trace/build_trace.sh` 重编 `libtrace.so` 即可,全程不需要 VCPU 源码。
 
-## trace 层就是 VCPU 的用法范例，而且开源了
-
-正因为 `trace()`、`trace_unidbg_dump()` 这些都是在 VCPU 接口之上包出来的，`trace/` 目录里的这份源码，其实就是「这套 VCPU 到底该怎么用」的最好例子。想搞清楚 `vc_make_handle`、各种 hook、寄存器读写在真实场景里是怎么串起来的，与其对着接口文档硬啃，不如直接把 trace 的实现读一遍——一目了然。
-
-这一层过去是和闭源的 VCPU 搅在一起的，现在已经把它干净地拆出来单独开源（这次解耦由 AI 完成）。拆开之后，trace 只通过公开的 `vc_*` 接口去调 VCPU：编译期用头文件，链接期从 `libvcpu.a` 取符号，跟 VCPU 内部实现再没有任何牵连。所以你完全可以拿它当模板改——加自己的 hook、换 trace 的输出格式、定制过滤规则，改完跑一下 `trace/build_trace.sh` 就重新编出 `libtrace.so`，全程用不到 VCPU 的源码。
-
-换句话说：**VCPU 是闭源的引擎内核，trace 是它上面一层开源的示范应用。** 你既可以直接拿现成的 `libtrace.so` 用，也可以把 trace 当起点，写出属于你自己的那套上层工具。
+支持多进程、多线程、多并发,多个函数同时追踪;抖音、美团等大型 app 实测无崩溃。工程已含预编译 `libtrace.so`、分离好的头文件,以及一个最简命令行示例(`demo/`,纯 C 用法、无 app 壳)。
 
 ## 更新记录
 
