@@ -601,9 +601,9 @@ AndroidPrybar/
 |   `-- prebuilt/arm64-v8a/
 |       `-- libtrace.so              ←   预编译成品(克隆即用)
 |-- trace/                           ← 开源的 trace 层
-|   |-- api/                         ←   trace 源码(EastTrace/JniTrace/…)
+|   |-- src/                         ←   trace 源码(EastTrace/JniTrace/…)
+|   |-- include/                     ←   trace 自己的头(含 ARM64Emulator.h 兼容垫片)
 |   |-- Utils/                       ←   通用工具头(符号在 libvcpu.a 中)
-|   |-- include/  compat/            ←   ARM.h/logging.h、ARM64Emulator.h 垫片
 |   |-- thirdparty/include/          ←   编译期用的 unicorn/capstone/dobby 头
 |   |-- trace.exports                ←   导出符号版本脚本
 |   |-- CMakeLists.txt / build_trace.sh  ← 两种重编方式

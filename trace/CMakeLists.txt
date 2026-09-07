@@ -14,17 +14,14 @@ project(trace)
 get_filename_component(PRYBAR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(LIBDIR "${PRYBAR_ROOT}/libs/${ANDROID_ABI}")
 
-# 只编 trace 自身源(api/);Utils 的符号已在 libvcpu.a 里,这里仅用其头文件。
-file(GLOB_RECURSE TRACE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/api/*.cpp")
+# 只编 trace 自身源(src/);Utils 的符号已在 libvcpu.a 里,这里仅用其头文件。
+file(GLOB_RECURSE TRACE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 add_library(trace SHARED ${TRACE_SRC})
 
 target_include_directories(trace PRIVATE
-    ${PRYBAR_ROOT}/include                       # vcpu.h / trace.h(公开头)
-    ${CMAKE_CURRENT_SOURCE_DIR}/compat           # ARM64Emulator.h 兼容垫片
-    ${CMAKE_CURRENT_SOURCE_DIR}/include           # ARM.h / logging.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/api/trace
-    ${CMAKE_CURRENT_SOURCE_DIR}/api/trace_inner_include
+    ${PRYBAR_ROOT}/include                        # 公开头:vcpu.h / trace.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include            # trace 自己的头(含 ARM64Emulator.h 垫片)
     ${CMAKE_CURRENT_SOURCE_DIR}/Utils
     ${CMAKE_CURRENT_SOURCE_DIR}/Utils/dlfc
     ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/include/unicorn

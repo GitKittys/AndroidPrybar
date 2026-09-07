@@ -26,9 +26,7 @@ OUT="$OUTDIR/libtrace.so"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 
 INCS="-I$ROOT/include \
-  -I$HERE/compat \
   -I$HERE/include \
-  -I$HERE/api/trace -I$HERE/api/trace_inner_include \
   -I$HERE/Utils -I$HERE/Utils/dlfc \
   -I$HERE/thirdparty/include/unicorn \
   -I$HERE/thirdparty/include/capstone \
@@ -41,8 +39,8 @@ CCBASE="$NDK/toolchains/llvm/prebuilt/$HOST/bin/aarch64-linux-android$API-clang"
 CC="$CCBASE"; [ -x "$CC" ] || CC="$CCBASE.cmd"
 echo "编译 trace 源(NDK=$NDK)..."
 i=0; OBJS=""
-# 只编 trace 自身源(api/);Utils 的符号已在 libvcpu.a 里,这里仅用其头文件,不重复编译
-for s in $(find "$HERE/api" \( -name '*.cpp' -o -name '*.c' \)); do
+# 只编 trace 自身源(src/);Utils 的符号已在 libvcpu.a 里,这里仅用其头文件,不重复编译
+for s in $(find "$HERE/src" \( -name '*.cpp' -o -name '*.c' \)); do
   o="$W/$i.o"; i=$((i+1))
   case "$s" in
     *.c)  "$CC"  -O2 -fPIC -std=c11 -march=armv8.1-a+lse -DANDROID -ffunction-sections -fdata-sections $INCS -c "$s" -o "$o" ;;
