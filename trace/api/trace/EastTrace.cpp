@@ -1570,13 +1570,7 @@ void freeTrace(uint64_t wrapper_func){
 static struct sigaction g_trace_old_sa[NSIG];
 static volatile sig_atomic_t g_trace_crash_armed = 0;
 
-// 尽力而为「刷 + 关」所有线程的 trace 实例——等价于 freeTrace 的落盘效果，但**不做 free/delete/
-// vc_free/加锁/clearSymbolCache**：那些在崩溃信号里会因 malloc/mutex 锁被崩溃线程持有而死锁/二次崩溃，
-// 恰在最需要时失败。这里只做数据抢救：
-//   ① 把当前指令还留在 StringBuilder 里的最后一行补进 dwBuf（延迟 flush 机制，否则最后一行会丢）；
-//   ② flushFromSignal 同步刷 dwBuf 当前缓冲到盘（LZ4+write，无 malloc）；
-//   ③ closeFromSignal 关掉文件 fd。
-// 全程**不加锁**：崩溃是终态，读到偶发不一致也认了，能把 trace 落全比纠结一致性值。仅文件模式。
+// 崩溃时别碰free和锁，十有八九死锁。只抢数据：sb里没刷完的先塞进dwBuf，再刷盘关fd。脏就脏了，总比丢了好。仅文件模式。
 static void trace_salvage_all_best_effort() {
     for (TraceInfo* ti : g_trace_all_clones) {
         if (!ti || !ti->dwBufInitialized) continue;
@@ -1588,6 +1582,7 @@ static void trace_salvage_all_best_effort() {
         ti->dwBuf.closeFromSignal();   // 关文件
     }
 }
+
 
 static void trace_crash_handler(int sig, siginfo_t* info, void* uctx) {
     trace_salvage_all_best_effort();

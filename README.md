@@ -5,7 +5,7 @@ ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任�
 **重点：**`trace()` **只是我们在这套 VCPU API 之上包出来的开箱即用工具之一，不是全部。** 不想写代码 → 直接 `trace()` 一键出日志；想精细控制 → 直接拿底层 VCPU（`vc_make_handle` + 各类 hook + 寄存器读写 + 单步/断点/快照）自己驱动。`trace()` / `trace_unidbg_dump()` / `replace_trace()` 本质都是这层 VCPU 的封装——比如 `trace()` 就是「`vc_make_handle` + 注册逐指令 hook + 把每条指令格式化写盘」。
 支持多进程，多线程，多并发，多个函数同时追踪，测试抖音，美团，等大型app均无崩溃情况。  
 
-本工程已包含预编译的 `libtrace.so`、头文件和 JNI 示例。克隆后直接编译运行即可查看结果。
+本工程已包含预编译的 `libtrace.so`、分离好的头文件,以及一个最简命令行示例(`demo/`,纯 C 用法、无 app 壳)。
 
 ## trace 层就是 VCPU 的用法范例，而且开源了
 
@@ -25,7 +25,7 @@ ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任�
 
 ## `libtrace.so` 在哪里
 
-预编译动态库：`libs/prebuilt/arm64-v8a/libtrace.so`（demo 运行期同一份在 `demo/app/src/main/jniLibs/arm64-v8a/`）
+预编译动态库：`libs/prebuilt/arm64-v8a/libtrace.so`（demo 运行时把它和可执行文件一起 `adb push` 到设备的 `/data/local/tmp/`）
 
 对外头文件（**已分离**）：`include/vcpu.h`（VCPU 核心 API）+ `include/trace.h`（trace 工具,顶部已 `#include "vcpu.h"`）。用 trace 直接 `#include "trace.h"` 即可。
 
@@ -607,8 +607,9 @@ AndroidPrybar/
 |   |-- thirdparty/include/          ←   编译期用的 unicorn/capstone/dobby 头
 |   |-- trace.exports                ←   导出符号版本脚本
 |   |-- CMakeLists.txt / build_trace.sh  ← 两种重编方式
-|-- demo/                            ← Android 接入示例工程(原 TraceDemo)
-|   `-- app/src/main/cpp/native-lib.cpp  ← Demo 示例代码(用 include/*.h)
+|-- demo/                            ← 最简命令行示例(无 app 壳)
+|   |-- main.cpp                     ←   trace 自己的一个 C 函数 → 出日志
+|   `-- build.sh                     ←   NDK 编成 arm64 可执行、链 libtrace.so
 |-- tools/
 |   |-- trace_receiver.py            ← TCP 接收 + LZ4 解码工具
 |   `-- build_calltree.py            ← trace → 函数调用树/调用图

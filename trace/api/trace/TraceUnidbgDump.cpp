@@ -1,3 +1,8 @@
+/**
+我非常讨厌c++的写法，我更喜欢纯粹的c语言，但是，没办法，这部分让ai做的，dump这部分我完全没有插手
+让它充分的利用我早已写好的vcpu的回调来做dump。
+*/
+
 //
 // TraceUnidbgDump.cpp — 运行时完整采样，导出 Unidbg「中段执行」所需的 dump 数据包。
 //
@@ -31,10 +36,7 @@
 // 已知局限：JNI 对象内容展开、TPIDR_EL0（vc_reg 未导出）暂未覆盖。
 //
 
-/**
-说实话，我非常讨厌c++的写法，我更喜欢纯粹的c语言，但是，没办法，这部分让ai做的，dump这部分我完全没有插手
-让它充分的利用我早已写好的vcpu的回调来做dump。
-*/
+
 
 #include "ARM64Emulator.h"
 #include "logging.h"
