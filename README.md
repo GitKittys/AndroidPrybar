@@ -17,9 +17,15 @@ ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任�
 
 ## `libtrace.so` 在哪里
 
-预编译动态库：`app/src/main/jniLibs/arm64-v8a/libtrace.so`
+预编译动态库：`libs/prebuilt/arm64-v8a/libtrace.so`（demo 运行期同一份在 `demo/app/src/main/jniLibs/arm64-v8a/`）
 
-对外头文件：`app/src/main/cpp/include/ARM64Emulator.h`
+对外头文件（**已分离**）：`include/vcpu.h`（VCPU 核心 API）+ `include/trace.h`（trace 工具,顶部已 `#include "vcpu.h"`）。用 trace 直接 `#include "trace.h"` 即可。
+
+### 开源分层(重要)
+
+- **`trace/`** —— 开源的 trace 层源码,链接闭源的 `libvcpu.a` 编出 `libtrace.so`。
+- **`libs/arm64-v8a/libvcpu.a` / `libvcpu.so`** —— 闭源二进制资产:**VCPU + Unicorn 引擎合并、已去除全部内部符号,仅暴露 `vc_*` 等接口**。`.a` 供 trace 静态嵌入、`.so` 供直接用裸 VCPU API 者动态加载。
+- **两种用法**:①克隆即用——直接用 `libs/prebuilt/arm64-v8a/libtrace.so` + `include/*.h`;②改 trace 源码后 `NDK=/path bash trace/build_trace.sh` 重编 `libtrace.so`(只需开源 trace 源 + 现成 `libvcpu.a`)。
 
 ---
 
@@ -35,7 +41,7 @@ ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任�
 ### trace() — 最简路径，一键出日志,一般用这个就够了,第二个参数是指定一个路径,不要指定名字,它支持多线程调用的,你用的时候,trace这个包装函数会返回一个同等功能的函数指针,你直接用inlinehook或者无痕hook等手段替换到原来地址,等app自己调用,或者你来传参调用都可以
 
 ```cpp
-#include "ARM64Emulator.h"
+#include "trace.h"
 
 // 本地文件输出（LZ4 压缩，per-thread 自动分 .lz4 文件）
 auto fn = (int(*)(int))trace((void*)target_func, "/data/data/pkg/trace_dir");
@@ -140,7 +146,7 @@ Unidbg 从该函数「中段」跑起来所需的全部要素落盘成一个 dum
 JNI 表、maps、目标读过的文件）。省去 Frida+dd+adb pull 反复回填那套。用法和 `trace()` 一样：拿指针 → 调 → 释放。
 
 ```cpp
-#include "ARM64Emulator.h"
+#include "trace.h"
 
 // 1. 包装目标函数，指定 dump 输出目录（返回同签名的可调用指针）
 auto h = (int(*)(JNIEnv*, jbyteArray))trace_unidbg_dump(
@@ -215,7 +221,7 @@ h(args...);   // 同一次运行：dump 落 dump/ 下，完整逐指令 trace �
 **完整流程**（创建句柄 → 加回调 → 调用 → 释放）：
 
 ```cpp
-#include "ARM64Emulator.h"
+#include "trace.h"
 
 // ① 创建 VCPU 句柄：把目标函数包成一个同签名、可调用的指针
 vm_context* ctx = nullptr;
@@ -575,15 +581,29 @@ libtest.so+0x..: ret       x0=0x0
 
 ```text
 AndroidPrybar/
-|-- TraceDemo/                       ← Android 接入示例工程
-|   `-- app/src/main/
-|       |-- cpp/include/ARM64Emulator.h  ← API 头文件
-|       |-- cpp/native-lib.cpp           ← Demo 示例代码
-|       `-- jniLibs/arm64-v8a/libtrace.so ← 预编译库
+|-- include/                         ← 对外公开头(已分离)
+|   |-- vcpu.h                       ←   VCPU 核心 API(对应 libvcpu.a)
+|   `-- trace.h                      ←   trace 工具 API(#include "vcpu.h")
+|-- libs/
+|   |-- arm64-v8a/
+|   |   |-- libvcpu.a                ←   闭源资产:VCPU+引擎合并、符号隐藏(静态)
+|   |   |-- libvcpu.so               ←   同上(动态,裸 VCPU 用)
+|   |   |-- libcapstone.a            ←   trace 依赖(反汇编)
+|   |   `-- libdobby.a               ←   trace 依赖(inline hook)
+|   `-- prebuilt/arm64-v8a/
+|       `-- libtrace.so              ←   预编译成品(克隆即用)
+|-- trace/                           ← 开源的 trace 层
+|   |-- api/                         ←   trace 源码(EastTrace/JniTrace/…)
+|   |-- Utils/                       ←   通用工具头(符号在 libvcpu.a 中)
+|   |-- include/  compat/            ←   ARM.h/logging.h、ARM64Emulator.h 垫片
+|   |-- thirdparty/include/          ←   编译期用的 unicorn/capstone/dobby 头
+|   |-- trace.exports                ←   导出符号版本脚本
+|   |-- CMakeLists.txt / build_trace.sh  ← 两种重编方式
+|-- demo/                            ← Android 接入示例工程(原 TraceDemo)
+|   `-- app/src/main/cpp/native-lib.cpp  ← Demo 示例代码(用 include/*.h)
 |-- tools/
 |   |-- trace_receiver.py            ← TCP 接收 + LZ4 解码工具
 |   `-- build_calltree.py            ← trace → 函数调用树/调用图
-|-- .claude/skills/unicorn-trace/    ← 附带的 Claude Code 用法 skill
 `-- README.md
 ```
 
