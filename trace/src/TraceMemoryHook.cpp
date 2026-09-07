@@ -1,6 +1,6 @@
 //
 // Created by ASUS on 2024-10-02.
-// 2026-09: 从 VCPU(unicornVm/api) 解耦到开源 trace 层。
+// 2026-09: 从底层 VCPU 解耦到开源 trace 层。
 //
 // 内置内存读写监控 hook — trace_read / trace_write 的实现。
 //
@@ -40,7 +40,7 @@ struct TraceMemoryHookStruct {
     FILE* output_file;              // 裸 vc_make_handle 时的输出文件（trace 模式下为 nullptr）
 };
 
-// per-ctx 去重表（trace 层自持，替代原 unicorn_vm_t::has_trace_mem_read/write 字段）。
+// per-ctx 去重表（trace 层自持，不依赖底层实现的内部字段）。
 static std::mutex g_trace_mem_mutex;
 static std::set<vm_context*> g_read_registered;
 static std::set<vm_context*> g_write_registered;
