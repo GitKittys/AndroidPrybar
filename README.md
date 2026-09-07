@@ -7,6 +7,14 @@ ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任�
 
 本工程已包含预编译的 `libtrace.so`、头文件和 JNI 示例。克隆后直接编译运行即可查看结果。
 
+## trace 层就是 VCPU 的用法范例，而且开源了
+
+正因为 `trace()`、`trace_unidbg_dump()` 这些都是在 VCPU 接口之上包出来的，`trace/` 目录里的这份源码，其实就是「这套 VCPU 到底该怎么用」的最好例子。想搞清楚 `vc_make_handle`、各种 hook、寄存器读写在真实场景里是怎么串起来的，与其对着接口文档硬啃，不如直接把 trace 的实现读一遍——一目了然。
+
+这一层过去是和闭源的 VCPU 搅在一起的，现在已经把它干净地拆出来单独开源（这次解耦由 AI 完成）。拆开之后，trace 只通过公开的 `vc_*` 接口去调 VCPU：编译期用头文件，链接期从 `libvcpu.a` 取符号，跟 VCPU 内部实现再没有任何牵连。所以你完全可以拿它当模板改——加自己的 hook、换 trace 的输出格式、定制过滤规则，改完跑一下 `trace/build_trace.sh` 就重新编出 `libtrace.so`，全程用不到 VCPU 的源码。
+
+换句话说：**VCPU 是闭源的引擎内核，trace 是它上面一层开源的示范应用。** 你既可以直接拿现成的 `libtrace.so` 用，也可以把 trace 当起点，写出属于你自己的那套上层工具。
+
 ## 更新记录
 
 - 新增 `vc_set_trace_crash_flush()`：app 崩溃/终止/exit 前强制把 trace 缓冲刷到磁盘，不丢崩溃点之前那段
