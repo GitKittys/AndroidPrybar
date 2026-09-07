@@ -1,10 +1,8 @@
-# AndroidPrybar
-
 ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任意 native 函数放进 Unicorn 引擎里执行，你能像调试器一样完全掌控它：逐指令 / 基本块 / 内存 / SVC / 外部调用 hook、读写寄存器、单步、断点、CPU 快照、反汇编。
 
-**`trace()` 只是这套 VCPU 之上的开箱工具之一,不是全部。** 不想写代码就直接 `trace()` 一键出日志;想精细控制就拿底层 VCPU（`vc_make_handle` + 各类 hook + 寄存器读写 + 单步/断点/快照）自己驱动——`trace()` / `trace_unidbg_dump()` / `replace_trace()` 都是这层 VCPU 的封装。
+`trace()` **只是这套 VCPU 之上的开箱工具之一,不是全部。** 不想写代码就直接 `trace()` 一键出日志;想精细控制就拿底层 VCPU（`vc_make_handle` + 各类 hook + 寄存器读写 + 单步/断点/快照）自己驱动——`trace()` / `trace_unidbg_dump()` / `replace_trace()` 都是这层 VCPU 的封装。
 
-VCPU 是闭源的引擎内核,`trace/` 则是它上面一层**开源**的示范应用(与 VCPU 的解耦由 AI 完成,只通过公开 `vc_*` 接口调用)。所以 trace 源码本身就是「这套 VCPU 怎么用」的最佳范例;想定制就拿它当模板改,`trace/build_trace.sh` 重编 `libtrace.so` 即可,全程不需要 VCPU 源码。
+VCPU 是闭源的引擎内核,`trace/` 则是它上面一层**开源**的示范应用(与 VCPU 的解耦由 AI 完成,只通过公开 `vc_`* 接口调用)。所以 trace 源码本身就是「这套 VCPU 怎么用」的最佳范例;想定制就拿它当模板改,`trace/build_trace.sh` 重编 `libtrace.so` 即可,全程不需要 VCPU 源码。
 
 支持多进程、多线程、多并发,多个函数同时追踪;抖音、美团等大型 app 实测无崩溃。工程已含预编译 `libtrace.so`、分离好的头文件,以及一个最简命令行示例(`demo/`,纯 C 用法、无 app 壳)。
 
@@ -16,7 +14,9 @@ VCPU 是闭源的引擎内核,`trace/` 则是它上面一层**开源**的示范�
 - README 增加 Frida 调用 `trace()` 的示例
 - 修复了部分 bug
 
-## `libtrace.so` 在哪里
+
+
+## `libtrace.so` 你拿来就用，如果你想修改trace日志格式，你可以自己改
 
 预编译动态库：`libs/prebuilt/arm64-v8a/libtrace.so`（demo 运行时把它和可执行文件一起 `adb push` 到设备的 `/data/local/tmp/`）
 
@@ -24,11 +24,13 @@ VCPU 是闭源的引擎内核,`trace/` 则是它上面一层**开源**的示范�
 
 ### 开源分层(重要)
 
-- **`trace/`** —— 开源的 trace 层源码,链接闭源的 `libvcpu.a` 编出 `libtrace.so`。
-- **`libs/arm64-v8a/libvcpu.a` / `libvcpu.so`** —— 闭源二进制资产:**VCPU + Unicorn 引擎合并、已去除全部内部符号,仅暴露 `vc_*` 等接口**。`.a` 供 trace 静态嵌入、`.so` 供直接用裸 VCPU API 者动态加载。
+- `trace/` —— 开源的 trace 层源码,链接闭源的 `libvcpu.a` 编出 `libtrace.so`。
+- `libs/arm64-v8a/libvcpu.a` **/** `libvcpu.so` —— 闭源二进制资产:**VCPU + Unicorn 引擎合并、已去除全部内部符号,仅暴露** `vc_`* **等接口**。`.a` 供 trace 静态嵌入、`.so` 供直接用裸 VCPU API 者动态加载。
 - **两种用法**:①克隆即用——直接用 `libs/prebuilt/arm64-v8a/libtrace.so` + `include/*.h`;②改 trace 源码后 `NDK=/path bash trace/build_trace.sh` 重编 `libtrace.so`(只需开源 trace 源 + 现成 `libvcpu.a`)。
 
 ---
+
+
 
 ## 快速上手
 
@@ -38,6 +40,8 @@ VCPU 是闭源的引擎内核,`trace/` 则是它上面一层**开源**的示范�
 > - **底层 VCPU**（自己写回调、掌控执行）：`vc_make_handle()` + `vc_hook_add()` + 寄存器读写 + 单步 / 断点 / CPU 快照 / 反汇编。
 >
 > 上面的包装**全部基于**下面的 VCPU API 实现。所以你既能当"一键 trace 工具"用，也能当"可编程 ARM64 VCPU"用——同一套东西。
+
+
 
 ### trace() — 最简路径，一键出日志,一般用这个就够了,第二个参数是指定一个路径,不要指定名字,它支持多线程调用的,你用的时候,trace这个包装函数会返回一个同等功能的函数指针,你直接用inlinehook或者无痕hook等手段替换到原来地址,等app自己调用,或者你来传参调用都可以
 
@@ -57,6 +61,8 @@ fn2(123);
 freeTrace((uint64_t)fn2); //不调用也行，释放资源而已
 ```
 
+
+
 #### Frida 调用示例（两参版）
 
 不写 C++、直接用 Frida 调 `libtrace.so` 导出的 `trace(func, path)`，包装目标函数后替换到原地址，等 app 自己调用即产出 trace：
@@ -73,6 +79,8 @@ const path   = Memory.allocUtf8String("/data/data/com.xxx/trace_dir"); // 目录
 const wrapper = trace(target, path);      // 返回同签名的包装函数指针
 Interceptor.replace(target, wrapper);     // 替换到原地址，之后 app 调用自动走 VM trace
 ```
+
+
 
 ### 自动追踪被 trace 函数内部创建的线程（可选，默认关）
 
@@ -96,6 +104,8 @@ fn(123);                                 // 内部 pthread_create 的线程自�
 - **TCP 模式**：子线程复用同一连接，接收端按 tid 分文件（无父前缀，帧只带 tid）。
 - **只追这些**：入口落在**目标 SO 内**、且经 `pthread_create` 新建的线程。**不追**：trace() 之前就已存在的线程、入口在 libc/ART 等系统库的线程（不会把系统内部线程全拖进 VM）。
 
+
+
 ### 崩溃 / 退出前保住 trace（可选）
 
 > **Q：用 trace 找检测点，但 app 一检测到环境异常就崩，trace 不完整怎么办？**
@@ -115,6 +125,8 @@ fn(123);                          // 就算 fn 里崩了，崩溃点之前的 tr
 - 仅**文件模式**（`.lz4`）；TCP 模式本就实时流、不受影响。
 - 信号处理器里只做「刷 + 关」，**不做释放**（崩溃时 malloc/锁可能被占，释放会死锁），尽力而为抢数据。
 
+
+
 ### vc_make_handle — 底层 VCPU（`trace()` 就是基于它包的）
 
 这是整个框架的核心：把目标函数变成一个"VM 托管的可调用句柄"，你注册 hook、读写寄存器、单步执行，
@@ -132,6 +144,8 @@ int result = fn(1, 2);  // 在 VM 中执行
 vc_free(ctx); //不调用也行，释放资源而已
 ```
 
+
+
 ### replace_trace() — inline hook 式 trace（一般用不到）
 
 ```cpp
@@ -139,6 +153,8 @@ replace_trace((void*)func_addr, "/data/data/pkg/trace_dir");
 // 之后所有对 func_addr 的调用都自动走 VM trace
 restore_function((void*)func_addr);  // 恢复原函数
 ```
+
+
 
 ### trace_unidbg_dump() — 一键导出 Unidbg「中段执行」dump 包
 
@@ -204,22 +220,13 @@ h(args...);   // 同一次运行：dump 落 dump/ 下，完整逐指令 trace �
 
 ---
 
+
+
 ## 不满意自带的 trace？直接用底层 Hook 自己包
 
-前面那些 `trace*` 都是成品；**真正的乐高积木是这一层 Hook**——它就是对 Unicorn hook API 的一层薄封装
-（只是把类型换成 `vm_context*` + `vc_*`，你无需引入任何引擎头文件）。
+这层 Hook 是对 Unicorn hook 的薄封装(类型换成 `vm_context*` + `vc_*`,不必碰任何引擎头);`trace()`、`trace_unidbg_dump()` 都是拿它拼的。套路一句话:**`vc_make_handle` 拿句柄 → `vc_hook_add` 挂回调 → 回调里写你自己的逻辑 → 调用**。记录、改寄存器、篡改返回值、下断、单步、按地址过滤,随你,不用动我们的代码。
 
-**上面所有开箱即用的 trace，全是拿这些 Hook 拼出来的**，套路完全一样：
-
-> `vc_make_handle` 拿句柄 → `vc_hook_add` 注册你要的 hook → **回调里写你自己的逻辑** → 调用函数。
-
-- `trace()` 本质 = `vc_make_handle` + 一个 `VC_HOOK_CODE`（逐指令）回调，回调里把「反汇编 + 寄存器 + 访存」格式化写盘；
-- `trace_unidbg_dump()` = `vc_make_handle` + `VC_HOOK_BLOCK` / `MEM` / `SVC` / `EMU_STOP` 几个 hook 采样落盘。
-
-所以自带的不够用时**不用改我们的代码**——直接注册下面这些 Hook，在回调里干你想干的：记录、改寄存器、
-篡改返回值、下断、单步、按地址过滤……随你。
-
-**完整流程**（创建句柄 → 加回调 → 调用 → 释放）：
+**完整流程**(创建 → 挂回调 → 调用 → 释放):
 
 ```cpp
 #include "trace.h"
@@ -273,6 +280,8 @@ void my_mem_cb(vm_context* ctx, vc_mem_type type,
 }
 ```
 
+
+
 ### Hook 类型速查，详细的签名请看头文件
 
 
@@ -289,6 +298,8 @@ void my_mem_cb(vm_context* ctx, vc_mem_type type,
 
 
 ---
+
+
 
 ## 寄存器读写
 
@@ -313,7 +324,11 @@ vc_reg_read(ctx, VC_REG_Q0, &q0);
 
 ---
 
+
+
 ## 跳转控制
+
+
 
 ### 默认行为
 
@@ -323,6 +338,8 @@ vc_reg_read(ctx, VC_REG_Q0, &q0);
 | 目标 SO       | VM 内执行   |
 | 其他用户 SO     | VM 内执行   |
 | 系统库（libc 等） | 跳出到 host |
+
+
 
 
 ### blacklist — 强制指定 SO 跳出到 host
@@ -340,6 +357,8 @@ vc_set_jump_blacklist(nullptr, ranges, 1);
 vc_clear_jump_blacklist();
 ```
 
+
+
 ### 全局开关
 
 ```cpp
@@ -348,6 +367,8 @@ vc_set_external_jump_enabled(false);
 ```
 
 ---
+
+
 
 ## 单步与受控执行
 
@@ -363,6 +384,8 @@ vc_single_step(ctx, 100);    // 执行 100 条后暂停
 vc_set_until(ctx, target_addr);
 vc_set_until(ctx, 0);  // 手动清除
 ```
+
+
 
 ### 类 LLDB 调试器示例
 
@@ -390,6 +413,8 @@ void debugger_cb(vm_context* ctx, uint64_t addr, uint32_t size, void* ud) {
 
 ---
 
+
+
 ## 反汇编 API
 
 ```cpp
@@ -404,6 +429,8 @@ for (int i = 0; i < count; i++) {
 ```
 
 ---
+
+
 
 ## VM 控制
 
@@ -423,6 +450,8 @@ const char* sym = vc_lookup_symbol(ctx, address);
 ```
 
 ---
+
+
 
 ## 内存监控
 
@@ -444,6 +473,8 @@ vc_hook_add(ctx, &hh, VC_HOOK_MEM_WRITE, (void*)mem_watch, nullptr,
 ```
 
 ---
+
+
 
 ## 实战示例：运行时修改寄存器 / 返回值
 
@@ -494,6 +525,8 @@ void patch_arg(vm_context* ctx, uint64_t addr, const char* sym,
 
 ---
 
+
+
 ## trace 格式摘要
 
 `.lz4` 用 `trace_receiver.py decode` 还原后每行一条指令。看几行真实例子就懂有哪些格式：
@@ -522,36 +555,40 @@ libtest.so+0x..: ret       x0=0x0
 
 ---
 
+
+
 ## API 速查表
 
 
-| API                                               | 用途                                                     |
-| ------------------------------------------------- | ------------------------------------------------------ |
-| `trace(func, path)`                               | 快速 trace（path 为目录 → 本地 .lz4，`"tcp:PORT"` → 远程）         |
-| `trace(func, path, &ctx)`                         | 带 ctx 的 trace                                          |
-| `freeTrace(wrapper)`                              | 释放 trace 句柄                                            |
-| `replace_trace(func, path)`                       | 全局替换式 trace                                            |
-| `restore_function(func)`                          | 恢复被替换的函数                                               |
-| `trace_unidbg_dump(func, dumpDir)`                | 导出 Unidbg 中段执行 dump 包（跑完自动落盘，返回可调用指针）                  |
-| `trace_unidbg_dump_finish(wrapper)`               | 释放 dump 句柄（文件已自动落盘，仅回收资源）                              |
-| `vc_make_handle(func, &ctx)`                      | 创建裸 VM 句柄                                              |
-| `vc_free(ctx)`                                    | 释放 VM 上下文                                              |
-| `vc_hook_add(ctx, &hh, type, cb, ud, begin, end)` | 注册 hook                                                |
-| `vc_hook_del(ctx, hh)`                            | 删除 hook                                                |
-| `vc_reg_read / vc_reg_write`                      | 寄存器读写                                                  |
-| `vc_reg_read_batch / vc_reg_write_batch`          | 批量读写                                                   |
-| `vc_emu_stop(ctx)`                                | 停止 VM                                                  |
-| `vc_single_step(ctx, count)`                      | 执行 N 条后暂停                                              |
-| `vc_set_until(ctx, addr)`                         | 设置临时断点                                                 |
-| `vc_disasm(addr, count, out)`                     | 反汇编                                                    |
-| `vc_context_save / restore / free`                | CPU 快照                                                 |
-| `vc_lookup_symbol(ctx, addr)`                     | 地址查符号                                                  |
-| `vc_set_jump_blacklist(names, ranges, n)`         | 设置跳转黑名单                                                |
-| `vc_clear_jump_blacklist()`                       | 清除黑名单                                                  |
-| `vc_set_external_jump_enabled(enabled)`           | 全局跳转开关                                                 |
+| API                                               | 用途                                                |
+| ------------------------------------------------- | ------------------------------------------------- |
+| `trace(func, path)`                               | 快速 trace（path 为目录 → 本地 .lz4，`"tcp:PORT"` → 远程）    |
+| `trace(func, path, &ctx)`                         | 带 ctx 的 trace                                     |
+| `freeTrace(wrapper)`                              | 释放 trace 句柄                                       |
+| `replace_trace(func, path)`                       | 全局替换式 trace                                       |
+| `restore_function(func)`                          | 恢复被替换的函数                                          |
+| `trace_unidbg_dump(func, dumpDir)`                | 导出 Unidbg 中段执行 dump 包（跑完自动落盘，返回可调用指针）             |
+| `trace_unidbg_dump_finish(wrapper)`               | 释放 dump 句柄（文件已自动落盘，仅回收资源）                         |
+| `vc_make_handle(func, &ctx)`                      | 创建裸 VM 句柄                                         |
+| `vc_free(ctx)`                                    | 释放 VM 上下文                                         |
+| `vc_hook_add(ctx, &hh, type, cb, ud, begin, end)` | 注册 hook                                           |
+| `vc_hook_del(ctx, hh)`                            | 删除 hook                                           |
+| `vc_reg_read / vc_reg_write`                      | 寄存器读写                                             |
+| `vc_reg_read_batch / vc_reg_write_batch`          | 批量读写                                              |
+| `vc_emu_stop(ctx)`                                | 停止 VM                                             |
+| `vc_single_step(ctx, count)`                      | 执行 N 条后暂停                                         |
+| `vc_set_until(ctx, addr)`                         | 设置临时断点                                            |
+| `vc_disasm(addr, count, out)`                     | 反汇编                                               |
+| `vc_context_save / restore / free`                | CPU 快照                                            |
+| `vc_lookup_symbol(ctx, addr)`                     | 地址查符号                                             |
+| `vc_set_jump_blacklist(names, ranges, n)`         | 设置跳转黑名单                                           |
+| `vc_clear_jump_blacklist()`                       | 清除黑名单                                             |
+| `vc_set_external_jump_enabled(enabled)`           | 全局跳转开关                                            |
 | `vc_set_auto_trace_threads(ctx, enable)`          | 自动追踪被 trace 函数内部创建的线程（**默认关**；3 参拿 ctx 传 true 开启） |
-| `vc_set_trace_crash_flush(enable)`                | 崩溃/终止/exit 前自动把 trace 缓冲刷到盘（文件模式），不丢崩溃前那段              |
-| `trace_read / trace_write`                        | 内存监控                                                   |
+| `vc_set_trace_crash_flush(enable)`                | 崩溃/终止/exit 前自动把 trace 缓冲刷到盘（文件模式），不丢崩溃前那段         |
+| `trace_read / trace_write`                        | 内存监控                                              |
+
+
 
 
 ## 性能参考
@@ -566,6 +603,8 @@ libtest.so+0x..: ret       x0=0x0
 
 
 ---
+
+
 
 ## Demo 工程说明
 
@@ -609,7 +648,11 @@ AndroidPrybar/
 `-- README.md
 ```
 
+
+
 ## 附带工具
+
+
 
 ### `tools/trace_receiver.py` — LZ4 解码 + TCP 接收
 
@@ -621,6 +664,8 @@ trace 输出统一为 LZ4 压缩格式（`.lz4` 文件），压缩比约 7-8x。
 > pip install lz4                        # 或
 > pip install -r tools/requirements.txt
 > ```
+
+
 
 #### 解码本地 .lz4 文件
 
@@ -636,6 +681,8 @@ python tools/trace_receiver.py decode *.lz4                  # 批量解码所�
 python tools/trace_receiver.py decode trace.lz4 --stdout     # 输出到 stdout（可 pipe 给 grep 等）
 python tools/trace_receiver.py decode trace.lz4 -o out.log   # 指定输出文件名
 ```
+
+
 
 #### TCP 远程接收（适合超大 trace）
 
@@ -655,6 +702,8 @@ python tools/trace_receiver.py receive --no-adb --host 192.168.1.x  # WiFi 直�
 python tools/trace_receiver.py receive --stdout              # 输出到 stdout
 ```
 
+
+
 #### 多线程输出
 
 trace 支持多线程并发调用，每个线程的 trace 数据带有 tid 标识：
@@ -669,6 +718,8 @@ trace 支持多线程并发调用，每个线程的 trace 数据带有 tid 标�
 [*] frames=42  total=3.2MB  ratio=7.6x  speed=12.5MB/s  [t1234:2.1M t5678:1.1M]
 ```
 
+
+
 ### `tools/build_calltree.py` — trace → 函数调用树
 
 从 trace 重建函数调用树/调用图（谁调了谁、各函数调用次数）。脚本侧建树，部分/被打断的 trace 也能建；新引擎的多线程输出（每线程一文件的目录）传目录即自动每线程一棵树。
@@ -678,6 +729,8 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 # 输出: <base>_calltree.txt(调用树) + <base>_callgraph.txt(调用图/计数)
 ```
 
+
+
 ### `.claude/skills/unicorn-trace/` — Claude Code 用法 skill
 
 本仓库内置一个 **Claude Code skill：**`unicorn-trace`。用 Claude Code 打开本仓库干活时，它会自动带上 libtrace 的完整用法，AI 直接知道怎么调 `trace()` / `vc_make_handle` / 各类 hook，不用每次解释。
@@ -685,6 +738,8 @@ python tools/build_calltree.py <trace文件或目录> [so名] [入口偏移hex] 
 - `SKILL.md`：精简速查（两个入口、API 速查表、Hook 类型、实战示例索引、trace 格式、性能、限制）。
 - `GUIDE.md`：完整指南（完整 API + 实战示例 + trace 格式）。
 - 想在别的项目用：把 `.claude/skills/unicorn-trace/` 复制到那个项目的 `.claude/skills/` 或用户级 `~/.claude/skills/`。
+
+
 
 ## 交流群 / 联系方式
 
