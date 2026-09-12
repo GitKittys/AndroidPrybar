@@ -1,0 +1,4 @@
+# 构建产物 / trace 输出,不入库
+demo_trace
+prybar_trace/
+*.lz4
