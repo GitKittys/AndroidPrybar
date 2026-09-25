@@ -1,151 +1,151 @@
-ARM64 **函数级 VCPU（可编程虚拟 CPU）** + 指令跟踪框架。把任意 native 函数放进 Unicorn 引擎里执行，你能像调试器一样完全掌控它：逐指令 / 基本块 / 内存 / SVC / 外部调用 hook、读写寄存器、单步、断点、CPU 快照、反汇编。
+# AndroidPrybar
 
-`trace()` **只是这套 libcVCPU 的封装。** 你可以直接调用直接 `trace()` 一键出日志;
-如果你对trace日志格式不满意，可以自己修改，本质上都是对 VCPU（`vc_make_handle` + vcpu内部的hook回调接口的封装
-自己驱动——`trace()` / `trace_unidbg_dump()` / `replace_trace()` 都是这层 VCPU 的封装。
+> **English** · [中文](README.zh-CN.md)
 
-VCPU 是闭源的引擎内核,`trace/` 则是它上面一层**开源**的示范应用(与 VCPU 的解耦由 AI 完成,只通过公开 `vc_`* 接口调用)。所以 trace 源码本身就是「这套 VCPU 怎么用」的最佳范例;想定制就拿它当模板改,`trace/build_trace.sh` 重编 `libtrace.so` 即可,全程不需要 VCPU 源码。
+> **AndroidPrybar is a good-faith binary analysis tool, intended for binary vulnerability discovery and security research.** It is meant to help researchers understand and audit native code on their own or authorized targets; please use it only within the bounds of applicable law and proper authorization.
 
-支持多进程、多线程、多并发,多个函数同时追踪;抖音、美团等大型 app 实测无崩溃。工程已含预编译 `libtrace.so`、分离好的头文件,以及一个最简命令行示例(`demo/`,纯 C 用法、无 app 壳)。
+ARM64 **function-level VCPU (programmable virtual CPU)** + instruction-tracing framework. Drop any native function into the Unicorn engine and run it while keeping full, debugger-like control: per-instruction / basic-block / memory / SVC / external-call hooks, register read & write, single-step, breakpoints, CPU snapshots, and disassembly.
 
-## 更新记录
+`trace()` **is just a wrapper over this VCPU.** You can call `trace()` directly for one-shot logging; if the trace log format doesn't suit you, modify it yourself — everything is ultimately a wrapper over the VCPU (`vc_make_handle` + the VCPU's internal hook-callback interfaces). `trace()` / `trace_unidbg_dump()` / `replace_trace()` are all wrappers over this VCPU layer.
 
-- 新增 `vc_set_trace_crash_flush()`：app 崩溃/终止/exit 前强制把 trace 缓冲刷到磁盘，不丢崩溃点之前那段
-- `trace_receiver.py` 解压改用 lz4 C 引擎（`pip install lz4`），decode 大幅加速；未安装则自动回退纯 Python
-- 新增 `trace_unidbg_dump()`：一键导出 Unidbg「中段执行」dump 包（内存段/寄存器/参数/符号/JNI 表/maps/rootfs）
-- README 增加 Frida 调用 `trace()` 的示例
-- 修复了部分 bug
+The VCPU is the closed-source engine core; `trace/` is an **open-source** sample application built on top of it (the decoupling from the VCPU was done by AI, calling only the public `vc_*` interfaces). So the trace source itself is the best example of "how to use this VCPU" — take it as a template to customize, and `trace/build_trace.sh` rebuilds `libtrace.so`; the VCPU source is never required.
 
-## `libtrace.so` 你拿来就用，如果你想修改trace日志格式，你可以自己改
+Supports multi-process, multi-thread, and high concurrency, tracing multiple functions at once. The project already ships a prebuilt `libtrace.so`, separated headers, and a minimal command-line example (`demo/`, pure C usage, no app shell).
 
-预编译动态库：`libs/prebuilt/arm64-v8a/libtrace.so`（demo 运行时把它和可执行文件一起 `adb push` 到设备的 `/data/local/tmp/`）
+## Changelog
 
-对外头文件（**已分离**）：`include/vcpu.h`（VCPU 核心 API）+ `include/trace.h`（trace 工具,顶部已 `#include "vcpu.h"`）。用 trace 直接 `#include "trace.h"` 即可。
+- Added `vc_set_trace_crash_flush()`: force-flush the trace buffer to disk before the app crashes / terminates / exits, so the portion before the crash point is never lost.
+- `trace_receiver.py` now decompresses via the lz4 C engine (`pip install lz4`), greatly speeding up `decode`; falls back to pure Python automatically if the package is missing.
+- Added `trace_unidbg_dump()`: one-shot export of a Unidbg "mid-execution" dump package (memory segments / registers / arguments / symbols / JNI table / maps / rootfs).
+- README: added a Frida example for calling `trace()`.
+- Fixed a number of bugs.
 
-### 开源分层(重要)
+## Where is `libtrace.so`
 
-- `trace/` —— 开源的 trace 层源码,链接闭源的 `libvcpu.a` 编出 `libtrace.so`。
-- `libs/arm64-v8a/libvcpu.a` **/** `libvcpu.so` —— 闭源二进制资产:**VCPU + Unicorn 引擎合并、已去除全部内部符号,仅暴露** `vc_`* **等接口**。`.a` 供 trace 静态嵌入、`.so` 供直接用裸 VCPU API 者动态加载。
-- **两种用法**:①克隆即用——直接用 `libs/prebuilt/arm64-v8a/libtrace.so` + `include/*.h`;②改 trace 源码后 `NDK=/path bash trace/build_trace.sh` 重编 `libtrace.so`(只需开源 trace 源 + 现成 `libvcpu.a`)。
+Prebuilt shared library: `libs/prebuilt/arm64-v8a/libtrace.so` (when running the demo, `adb push` it together with the executable to `/data/local/tmp/` on the device).
+
+Public headers (**separated**): `include/vcpu.h` (VCPU core API) + `include/trace.h` (trace tooling, which already `#include "vcpu.h"` at the top). To use trace, just `#include "trace.h"`.
+
+### Open-source layering (important)
+
+- `trace/` — the open-source trace-layer source, linked against the closed-source `libvcpu.a` to build `libtrace.so`.
+- `libs/arm64-v8a/libvcpu.a` **/** `libvcpu.so` — closed-source binary assets: **the VCPU + Unicorn engine merged together, with all internal symbols stripped, exposing only the** `vc_*` **interfaces.** The `.a` is for static embedding into trace; the `.so` is for those who load the raw VCPU API dynamically.
+- **Two ways to use it:** ① clone and go — use `libs/prebuilt/arm64-v8a/libtrace.so` + `include/*.h` directly; ② after editing the trace source, run `NDK=/path bash trace/build_trace.sh` to rebuild `libtrace.so` (needs only the open-source trace source + the ready-made `libvcpu.a`).
 
 ---
 
-## 快速上手
+## Quick start
 
-> **两层用法，按需选：**
+> **Two layers of usage, pick as needed:**
 >
-> - **开箱即用的包装**（不写逻辑、一键出结果）：`trace()`、`trace_unidbg_dump()`、`replace_trace()`。
-> - **底层 VCPU**（自己写回调、掌控执行）：`vc_make_handle()` + `vc_hook_add()` + 寄存器读写 + 单步 / 断点 / CPU 快照 / 反汇编。
+> - **Ready-made wrappers** (no logic to write, one call for results): `trace()`, `trace_unidbg_dump()`, `replace_trace()`.
+> - **The low-level VCPU** (write your own callbacks, drive execution yourself): `vc_make_handle()` + `vc_hook_add()` + register read/write + single-step / breakpoints / CPU snapshots / disassembly.
 >
-> 上面的包装**全部基于**下面的 VCPU API 实现。所以你既能当"一键 trace 工具"用，也能当"可编程 ARM64 VCPU"用——同一套东西。
+> The wrappers are **all built on** the VCPU API below. So you can use it as a "one-click trace tool" or as a "programmable ARM64 VCPU" — same thing.
 
+## Documentation
 
-## 文档
+Detailed usage is split into two docs, read what you need:
 
-详细用法拆成两份,按需看:
+- **[docs/VCPU.md](docs/VCPU.md)** — the low-level programmable VCPU: `vc_make_handle` to get a handle, the various Hooks, register read/write, single-step / breakpoints, CPU snapshots, disassembly, jump control, memory monitoring, plus a "modify registers / return values at runtime" walkthrough. **Read this too if you want to build your own trace.**
+- **[docs/TRACE.md](docs/TRACE.md)** — the ready-made trace tooling: `trace()`, Frida invocation, automatic thread tracing, crash-safe flushing, `replace_trace()`, `trace_unidbg_dump()`, the trace output format, and the companion decode / call-tree tools.
 
-- **[docs/VCPU.md](docs/VCPU.md)** —— 底层可编程 VCPU:`vc_make_handle` 拿句柄、各类 Hook、寄存器读写、单步 / 断点、CPU 快照、反汇编、跳转控制、内存监控,以及「运行时改寄存器 / 返回值」实战。**想自己包 trace 也看这份。**
-- **[docs/TRACE.md](docs/TRACE.md)** —— 开箱 trace 工具:`trace()`、Frida 调用、自动线程追踪、崩溃保盘、`replace_trace()`、`trace_unidbg_dump()`、trace 输出格式,以及配套解码 / 调用树工具。
+## API cheat sheet
 
-## API 速查表
+| API                                               | Purpose                                                                          |
+| ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `trace(func, path)`                               | Quick trace (path is a directory → local `.lz4`, `"tcp:PORT"` → remote)          |
+| `trace(func, path, &ctx)`                         | trace with a ctx                                                                  |
+| `freeTrace(wrapper)`                              | Release a trace handle                                                            |
+| `replace_trace(func, path)`                       | Global replace-style trace                                                        |
+| `restore_function(func)`                          | Restore a replaced function                                                       |
+| `trace_unidbg_dump(func, dumpDir)`                | Export a Unidbg mid-execution dump package (auto-flushed on completion, returns a callable pointer) |
+| `trace_unidbg_dump_finish(wrapper)`               | Release the dump handle (files already flushed; just reclaims resources)          |
+| `vc_make_handle(func, &ctx)`                      | Create a raw VM handle                                                            |
+| `vc_free(ctx)`                                    | Release the VM context                                                            |
+| `vc_hook_add(ctx, &hh, type, cb, ud, begin, end)` | Register a hook                                                                   |
+| `vc_hook_del(ctx, hh)`                            | Remove a hook                                                                     |
+| `vc_reg_read / vc_reg_write`                      | Register read/write                                                               |
+| `vc_reg_read_batch / vc_reg_write_batch`          | Batch read/write                                                                  |
+| `vc_emu_stop(ctx)`                                | Stop the VM                                                                       |
+| `vc_single_step(ctx, count)`                      | Pause after N instructions                                                        |
+| `vc_set_until(ctx, addr)`                         | Set a temporary breakpoint                                                        |
+| `vc_disasm(addr, count, out)`                     | Disassemble                                                                       |
+| `vc_context_save / restore / free`                | CPU snapshot                                                                      |
+| `vc_lookup_symbol(ctx, addr)`                     | Resolve address to symbol                                                         |
+| `vc_set_jump_blacklist(names, ranges, n)`         | Set the jump blacklist                                                            |
+| `vc_clear_jump_blacklist()`                       | Clear the blacklist                                                               |
+| `vc_set_external_jump_enabled(enabled)`           | Global jump switch                                                                |
+| `vc_set_auto_trace_threads(ctx, enable)`          | Auto-trace threads created inside the traced function (**off by default**; take ctx via the 3-arg form and pass true to enable) |
+| `vc_set_trace_crash_flush(enable)`                | Auto-flush the trace buffer to disk before crash/terminate/exit (file mode), so the pre-crash portion isn't lost |
+| `trace_read / trace_write`                        | Memory monitoring                                                                 |
 
+## Performance reference
 
-| API                                               | 用途                                                                       |
-| ------------------------------------------------- | -------------------------------------------------------------------------- |
-| `trace(func, path)`                               | 快速 trace（path 为目录 → 本地 .lz4，`"tcp:PORT"` → 远程）               |
-| `trace(func, path, &ctx)`                         | 带 ctx 的 trace                                                            |
-| `freeTrace(wrapper)`                              | 释放 trace 句柄                                                            |
-| `replace_trace(func, path)`                       | 全局替换式 trace                                                           |
-| `restore_function(func)`                          | 恢复被替换的函数                                                           |
-| `trace_unidbg_dump(func, dumpDir)`                | 导出 Unidbg 中段执行 dump 包（跑完自动落盘，返回可调用指针）               |
-| `trace_unidbg_dump_finish(wrapper)`               | 释放 dump 句柄（文件已自动落盘，仅回收资源）                               |
-| `vc_make_handle(func, &ctx)`                      | 创建裸 VM 句柄                                                             |
-| `vc_free(ctx)`                                    | 释放 VM 上下文                                                             |
-| `vc_hook_add(ctx, &hh, type, cb, ud, begin, end)` | 注册 hook                                                                  |
-| `vc_hook_del(ctx, hh)`                            | 删除 hook                                                                  |
-| `vc_reg_read / vc_reg_write`                      | 寄存器读写                                                                 |
-| `vc_reg_read_batch / vc_reg_write_batch`          | 批量读写                                                                   |
-| `vc_emu_stop(ctx)`                                | 停止 VM                                                                    |
-| `vc_single_step(ctx, count)`                      | 执行 N 条后暂停                                                            |
-| `vc_set_until(ctx, addr)`                         | 设置临时断点                                                               |
-| `vc_disasm(addr, count, out)`                     | 反汇编                                                                     |
-| `vc_context_save / restore / free`                | CPU 快照                                                                   |
-| `vc_lookup_symbol(ctx, addr)`                     | 地址查符号                                                                 |
-| `vc_set_jump_blacklist(names, ranges, n)`         | 设置跳转黑名单                                                             |
-| `vc_clear_jump_blacklist()`                       | 清除黑名单                                                                 |
-| `vc_set_external_jump_enabled(enabled)`           | 全局跳转开关                                                               |
-| `vc_set_auto_trace_threads(ctx, enable)`          | 自动追踪被 trace 函数内部创建的线程（**默认关**；3 参拿 ctx 传 true 开启） |
-| `vc_set_trace_crash_flush(enable)`                | 崩溃/终止/exit 前自动把 trace 缓冲刷到盘（文件模式），不丢崩溃前那段       |
-| `trace_read / trace_write`                        | 内存监控                                                                   |
-
-## 性能参考
-
-
-| 模式                   | 速度         | 适用场景               |
-| ---------------------- | ------------ | ---------------------- |
-| vc_make_handle（默认） | ~2-5x 慢     | 功能验证、外部调用监控 |
-| trace() 指令级         | ~50-100x 慢  | 详细分析、逆向工程     |
-| vc_make_handle + CODE  | ~10-20x 慢   | 自定义逐指令监控       |
-| vc_single_step(ctx, 1) | ~100-200x 慢 | 精确调试               |
+| Mode                   | Speed          | Use case                              |
+| ---------------------- | -------------- | ------------------------------------- |
+| vc_make_handle (default) | ~2-5x slower  | Functional validation, external-call monitoring |
+| trace() instruction-level | ~50-100x slower | Detailed analysis, reverse engineering |
+| vc_make_handle + CODE  | ~10-20x slower | Custom per-instruction monitoring     |
+| vc_single_step(ctx, 1) | ~100-200x slower | Precise debugging                    |
 
 ---
 
 ## Demo
 
-`demo/` 是一个最简命令行示例(**无 Android app 壳**):`main.cpp` 里定义一个自己的 C 函数,用 `trace()`
-包装 → 进 VCPU 执行 → 落 trace 日志,核心就三步(`trace()` 拿指针 → 调它 → `freeTrace()`)。
+`demo/` is a minimal command-line example (**no Android app shell**): `main.cpp` defines its own C function, wraps it with `trace()` → runs it in the VCPU → writes a trace log. The core is just three steps (`trace()` for a pointer → call it → `freeTrace()`).
 
-编译、`adb push` 到设备运行、`decode` 还原的完整步骤见 **[demo/README.md](demo/README.md)**。
+Full steps for building, `adb push`-ing to the device, and `decode`-ing the result are in **[demo/README.md](demo/README.md)**.
 
-## 项目结构
+## Project structure
 
 ```text
 AndroidPrybar/
-|-- include/                         ← 对外公开头(已分离)
-|   |-- vcpu.h                       ←   VCPU 核心 API(对应 libvcpu.a)
-|   `-- trace.h                      ←   trace 工具 API(#include "vcpu.h")
+|-- include/                         ← public headers (separated)
+|   |-- vcpu.h                       ←   VCPU core API (matches libvcpu.a)
+|   `-- trace.h                      ←   trace tooling API (#include "vcpu.h")
 |-- libs/
 |   |-- arm64-v8a/
-|   |   |-- libvcpu.a                ←   闭源资产:VCPU+引擎合并、符号隐藏(静态)
-|   |   |-- libvcpu.so               ←   同上(动态,裸 VCPU 用)
-|   |   |-- libcapstone.a            ←   trace 依赖(反汇编)
-|   |   `-- libdobby.a               ←   trace 依赖(inline hook)
+|   |   |-- libvcpu.a                ←   closed-source asset: VCPU+engine merged, symbols hidden (static)
+|   |   |-- libvcpu.so               ←   same as above (dynamic, for raw VCPU use)
+|   |   |-- libcapstone.a            ←   trace dependency (disassembly)
+|   |   `-- libdobby.a               ←   trace dependency (inline hook)
 |   `-- prebuilt/arm64-v8a/
-|       `-- libtrace.so              ←   预编译成品(克隆即用)
-|-- trace/                           ← 开源的 trace 层
-|   |-- src/                         ←   trace 源码(EastTrace/JniTrace/…)
-|   |-- include/                     ←   trace 自己的头(含 ARM64Emulator.h 兼容垫片)
-|   |-- Utils/                       ←   通用工具头(符号在 libvcpu.a 中)
-|   |-- thirdparty/include/          ←   编译期用的 unicorn/capstone/dobby 头
-|   |-- trace.exports                ←   导出符号版本脚本
-|   |-- CMakeLists.txt / build_trace.sh  ← 两种重编方式
-|-- demo/                            ← 最简命令行示例(无 app 壳)
-|   |-- main.cpp                     ←   trace 自己的一个 C 函数 → 出日志
-|   `-- build.sh                     ←   NDK 编成 arm64 可执行、链 libtrace.so
+|       `-- libtrace.so              ←   prebuilt product (clone and go)
+|-- trace/                           ← open-source trace layer
+|   |-- src/                         ←   trace source (EastTrace/JniTrace/…)
+|   |-- include/                     ←   trace's own headers (incl. ARM64Emulator.h compat shim)
+|   |-- Utils/                       ←   common utility headers (symbols live in libvcpu.a)
+|   |-- thirdparty/include/          ←   unicorn/capstone/dobby headers used at build time
+|   |-- trace.exports                ←   export-symbol version script
+|   |-- CMakeLists.txt / build_trace.sh  ← two ways to rebuild
+|-- demo/                            ← minimal command-line example (no app shell)
+|   |-- main.cpp                     ←   trace's own C function → produces a log
+|   `-- build.sh                     ←   NDK-build an arm64 executable, links libtrace.so
 |-- tools/
-|   |-- trace_receiver.py            ← TCP 接收 + LZ4 解码工具
-|   `-- build_calltree.py            ← trace → 函数调用树/调用图
+|   |-- trace_receiver.py            ← TCP receiver + LZ4 decoder
+|   `-- build_calltree.py            ← trace → function call tree / call graph
 `-- README.md
 ```
 
-### `.claude/skills/unicorn-trace/` — Claude Code 用法 skill
+### `.claude/skills/unicorn-trace/` — Claude Code usage skill
 
-本仓库内置一个 **Claude Code skill：**`unicorn-trace`。用 Claude Code 打开本仓库干活时，它会自动带上 libtrace 的完整用法，AI 直接知道怎么调 `trace()` / `vc_make_handle` / 各类 hook，不用每次解释。
+The repo ships a **Claude Code skill: `unicorn-trace`**. When you open this repo with Claude Code, it automatically loads the full usage of libtrace, so the AI knows how to call `trace()` / `vc_make_handle` / the various hooks without re-explaining each time.
 
-- `SKILL.md`：精简速查（两个入口、API 速查表、Hook 类型、实战示例索引、trace 格式、性能、限制）。
-- `GUIDE.md`：完整指南（完整 API + 实战示例 + trace 格式）。
-- 想在别的项目用：把 `.claude/skills/unicorn-trace/` 复制到那个项目的 `.claude/skills/` 或用户级 `~/.claude/skills/`。
+- `SKILL.md`: a concise quick reference (the two entry points, API cheat sheet, hook types, worked-example index, trace format, performance, limits).
+- `GUIDE.md`: the full guide (complete API + worked examples + trace format).
+- To use it in another project: copy `.claude/skills/unicorn-trace/` into that project's `.claude/skills/` or the user-level `~/.claude/skills/`.
 
-## 交流群 / 联系方式
+## Community / contact
 
-欢迎大家扫码进群，一起学习和交流 Android Native / Trace / VM 相关内容。
+You're welcome to scan the QR code and join the group to learn and discuss Android native / trace / VM topics together.
 
-作者微信：`klovemh3344`
+Author WeChat: `klovemh3344`
 
-群聊：import FacaiTrace
+Group chat: import FacaiTrace
 
-## 个人的碎碎念念
+## A few personal words
 
-这个工具断断续续写了两年。当时公开好用的 trace 工具不多，相关思路也少有人分享，很多东西只能自己一点点摸索、测试、推倒重来，光是一个支持自动传参的 JIT 就折腾了很久。
+I worked on this tool on and off for two years. Back then there weren't many good, publicly available trace tools, and the underlying ideas were rarely shared, so a lot of it I had to feel out, test, and rebuild from scratch on my own — just getting a JIT that supports automatic argument passing took a long time.
 
-现在把它分享出来，用得上就拿去用，随便改、随便抄，不用署名。如果它帮到了你，欢迎进群交流，也算是给我一点继续维护的动力。
+Now I'm sharing it. Use it if it helps, change it, copy it, no attribution required. If it helped you, you're welcome to join the group and chat — that's a bit of motivation for me to keep maintaining it.
